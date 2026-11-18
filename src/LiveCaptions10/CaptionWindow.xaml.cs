@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Linq;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -25,7 +27,10 @@ internal partial class CaptionWindow : Window
     readonly AppBar appBar;
     readonly List<Segment> segments = new();
     IntPtr hwnd;
-    string partial = "";
+    PartialUpdate? voskPartial;
+    LiveText? live;
+    long lastFinishedUtterance;
+    Brush tailBrush = Brushes.Gray;
     bool partialBreak, utteranceOpen, allowClose, placing, autoScroll = true;
     DateTime lastFinalUtc = DateTime.MinValue;
     long lastSegmentId;
@@ -125,6 +130,9 @@ internal partial class CaptionWindow : Window
         var style = CaptionStyles.Get(settings.Style);
         var foreground = new SolidColorBrush(style.Foreground);
         foreground.Freeze();
+        var tail = new SolidColorBrush(Color.FromArgb(0x99, style.Foreground.R, style.Foreground.G, style.Foreground.B));
+        tail.Freeze();
+        tailBrush = tail;
 
         Root.Background = new SolidColorBrush(style.Background);
         CaptionText.Foreground = StatusText.Foreground = SettingsButton.Foreground = CloseButton.Foreground = foreground;
@@ -229,29 +237,53 @@ internal partial class CaptionWindow : Window
 
     // ---------- captions ----------
 
-    public void ShowPartial(string raw)
+    /// <summary>Vosk's words for the sentence in progress (instant, rough).</summary>
+    public void ShowPartial(PartialUpdate update)
     {
-        var text = CaptionFormatter.FormatPartial(raw, settings.FilterProfanity);
-        if (text.Length == 0)
+        if (update.Utterance <= lastFinishedUtterance) return; // arrived after its sentence was finished
+        if (update.Text.Length == 0)
         {
-            partial = "";
+            voskPartial = null;
+            live = null;
             utteranceOpen = false;
             Render();
             return;
         }
-        if (!utteranceOpen)
-        {
-            utteranceOpen = true;
-            partialBreak = StartsNewParagraph();
-        }
-        partial = text;
+        OpenUtterance();
+        voskPartial = update;
+        if (live != null && live.Utterance != update.Utterance) live = null;
+        Render();
+    }
+
+    /// <summary>Whisper's text for the settled part of the sentence in progress (accurate, ~1 s behind).</summary>
+    public void ShowLive(LiveSnapshot snapshot, string text)
+    {
+        if (snapshot.Utterance <= lastFinishedUtterance) return;
+        OpenUtterance();
+        live = new LiveText(snapshot.Utterance, text, snapshot.CoveredUntil, snapshot.CoveredWords);
         Render();
     }
 
     /// <summary>Commits a finished utterance; returns its id and the text as displayed ("" if dropped).</summary>
-    public (long Id, string Text) ShowFinal(string raw)
+    public (long Id, string Text) ShowFinal(FinalUpdate update)
     {
-        var text = CaptionFormatter.FormatFinal(raw, settings.FilterProfanity);
+        string text;
+        if (live != null && live.Utterance == update.Utterance)
+        {
+            // Whisper's live text plus whatever Vosk heard after it; the final Whisper pass follows shortly.
+            var after = update.Words.Where(w => w.Start >= live.CoveredUntil - 0.05).Select(w => w.Word);
+            var (main, tail) = Compose(live, string.Join(' ', after));
+            text = tail.Length > 0 ? main + " " + tail : main;
+            if (text.Length > 0 && text[^1] is not ('.' or '?' or '!')) text += ".";
+        }
+        else
+        {
+            text = CaptionFormatter.FormatFinal(update.Text, settings.FilterProfanity);
+        }
+        lastFinishedUtterance = Math.Max(lastFinishedUtterance, update.Utterance);
+        voskPartial = null;
+        live = null;
+
         long id = 0;
         if (text.Length > 0)
         {
@@ -260,7 +292,6 @@ internal partial class CaptionWindow : Window
             if (segments.Count > MaxSegments) segments.RemoveRange(0, segments.Count - MaxSegments);
             lastFinalUtc = DateTime.UtcNow;
         }
-        partial = "";
         utteranceOpen = false;
         Render();
         return (id, text);
@@ -279,7 +310,8 @@ internal partial class CaptionWindow : Window
     public void ClearCaptions()
     {
         segments.Clear();
-        partial = "";
+        voskPartial = null;
+        live = null;
         utteranceOpen = false;
         autoScroll = true;
         Render();
@@ -295,15 +327,89 @@ internal partial class CaptionWindow : Window
     bool StartsNewParagraph() =>
         segments.Count > 0 && (DateTime.UtcNow - lastFinalUtc).TotalSeconds > ParagraphGapSeconds;
 
+    void OpenUtterance()
+    {
+        if (utteranceOpen) return;
+        utteranceOpen = true;
+        partialBreak = StartsNewParagraph();
+    }
+
+    /// <summary>The sentence in progress: main text (normal colour) and the newest unconfirmed words (dimmed).</summary>
+    (string Main, string Tail) InProgress()
+    {
+        if (live != null)
+        {
+            // Vosk's words beyond the ones Whisper has already transcribed.
+            var newer = voskPartial?.Utterance == live.Utterance ? WordsAfter(voskPartial.Text, live) : "";
+            return Compose(live, newer);
+        }
+        if (voskPartial != null) return (CaptionFormatter.FormatPartial(voskPartial.Text, settings.FilterProfanity), "");
+        return ("", "");
+    }
+
+    /// <summary>
+    /// Vosk's words that come after Whisper's text. Whisper's last word is looked up among Vosk's words near
+    /// where it should be (Vosk often adds or drops a word, so plain counting can be off by one or two).
+    /// </summary>
+    static string WordsAfter(string voskText, LiveText whisper)
+    {
+        var vosk = voskText.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var whisperWords = whisper.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(Normalize).Where(w => w.Length > 0).ToArray();
+        int split = Math.Min(whisper.CoveredWords, vosk.Length);
+        if (whisperWords.Length > 0)
+        {
+            var last = whisperWords[^1];
+            for (int i = Math.Min(vosk.Length - 1, whisper.CoveredWords + 2); i >= Math.Max(0, whisper.CoveredWords - 4); i--)
+            {
+                if (SameWord(Normalize(vosk[i]), last))
+                {
+                    split = i + 1;
+                    break;
+                }
+            }
+        }
+        return string.Join(' ', vosk.Skip(split));
+    }
+
+    static string Normalize(string word) => new string(word.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+
+    // Vosk and Whisper spell some words differently ("fifty" / "50", "news" / "new"): compare loosely.
+    static bool SameWord(string a, string b) =>
+        a.Length > 0 && b.Length > 0 && (a == b || (a.Length >= 3 && b.Length >= 3 && a[..3] == b[..3]));
+
+    (string Main, string Tail) Compose(LiveText whisper, string newerVoskWords)
+    {
+        var main = CaptionFormatter.FormatRefined(whisper.Text, settings.FilterProfanity);
+        var tail = CaptionFormatter.FormatTail(newerVoskWords, settings.FilterProfanity);
+        if (tail.Length > 0) main = main.TrimEnd('.', '…', ',', ' '); // the sentence continues
+        return (main, tail);
+    }
+
     void Render()
     {
-        var sb = new StringBuilder();
-        foreach (var s in segments) Append(sb, s.Text, s.BreakBefore);
-        if (partial.Length > 0) Append(sb, partial, partialBreak);
+        var settled = new StringBuilder();
+        foreach (var s in segments) Append(settled, s.Text, s.BreakBefore);
+        var (main, tail) = InProgress();
+        if (main.Length > 0) Append(settled, main, partialBreak);
 
-        CaptionText.Text = sb.ToString();
-        StatusPanel.Visibility = sb.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
+        CaptionText.Inlines.Clear();
+        AddText(settled.ToString(), null);
+        if (tail.Length > 0) AddText((settled.Length > 0 ? " " : "") + tail, tailBrush);
+        StatusPanel.Visibility = settled.Length + tail.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
         if (autoScroll) Scroller.ScrollToEnd();
+    }
+
+    void AddText(string text, Brush? brush)
+    {
+        var lines = text.Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+        {
+            if (i > 0) CaptionText.Inlines.Add(new LineBreak());
+            if (lines[i].Length == 0) continue;
+            var run = new Run(lines[i]);
+            if (brush != null) run.Foreground = brush;
+            CaptionText.Inlines.Add(run);
+        }
     }
 
     static void Append(StringBuilder sb, string text, bool newParagraph)
@@ -344,4 +450,6 @@ internal partial class CaptionWindow : Window
     }
 
     readonly record struct Segment(long Id, string Text, bool BreakBefore);
+
+    sealed record LiveText(long Utterance, string Text, double CoveredUntil, int CoveredWords);
 }

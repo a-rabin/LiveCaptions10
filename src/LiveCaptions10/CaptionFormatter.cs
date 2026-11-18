@@ -37,6 +37,9 @@ internal static class CaptionFormatter
 
     public static string FormatPartial(string raw, bool filterProfanity) => Clean(raw, filterProfanity);
 
+    /// <summary>The newest few words after Whisper's live text: tidied, but not capitalized.</summary>
+    public static string FormatTail(string raw, bool filterProfanity) => Clean(raw, filterProfanity, capitalize: false);
+
     /// <summary>Whisper output is already cased and punctuated; only tidy it and apply the filter.</summary>
     public static string FormatRefined(string text, bool filterProfanity)
     {
@@ -55,7 +58,7 @@ internal static class CaptionFormatter
         return text + (LooksLikeQuestion(text) ? "?" : ".");
     }
 
-    static string Clean(string raw, bool filterProfanity)
+    static string Clean(string raw, bool filterProfanity, bool capitalize = true)
     {
         var text = raw.Replace("[unk]", " ");
         text = Fillers.Replace(text, " ");
@@ -64,7 +67,7 @@ internal static class CaptionFormatter
         text = PronounI.Replace(text, "I");
         text = ProperNouns.Replace(text, m => TitleCase(m.Value));
         if (filterProfanity) text = Profanity.Replace(text, m => m.Value[0] + new string('*', m.Value.Length - 1));
-        return char.ToUpperInvariant(text[0]) + text.Substring(1);
+        return capitalize ? char.ToUpperInvariant(text[0]) + text.Substring(1) : text;
     }
 
     static string TitleCase(string words)

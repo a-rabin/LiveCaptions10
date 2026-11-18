@@ -10,7 +10,11 @@ It listens to your speakers (and optionally your microphone), runs speech recogn
 
 - **Captions any audio the PC plays**, using WASAPI loopback. Follows you when you switch speakers or headphones.
 - **Offline.** No account, no cloud. The network is only used once, to download the speech models.
-- **Two-stage recognition.** [Vosk](https://alphacephei.com/vosk/) shows words instantly as they're spoken. When a sentence ends, [Whisper](https://github.com/openai/whisper) (small.en, via [Whisper.net](https://github.com/sandrohanea/whisper.net)) re-transcribes it and replaces the draft about a second later, with punctuation, casing and numbers ("$50", not "fifty dollars"). Whisper is much better on real-world audio: music under speech, accents, fast talkers.
+- **Three layers of recognition**, so text is both instant and accurate:
+  1. [Vosk](https://alphacephei.com/vosk/) shows each word the moment it's spoken (rough, lowercase).
+  2. While the sentence is still going, [Whisper](https://github.com/openai/whisper) small.en re-transcribes it every half second. Its text replaces Vosk's about a second behind the speaker, and Vosk's newest few words stay visible after it, dimmed.
+  3. When the sentence ends, Whisper large-v3-turbo transcribes it once more, with punctuation, casing and numbers ("$50", not "fifty dollars"). This is the most accurate version, and it handles fast talkers, accents and music under speech.
+- **Runs Whisper on the GPU** through Vulkan, including AMD and Intel integrated graphics, with automatic fallback to the CPU. Switch between them in the menu.
 - **Docked like the taskbar.** In Top or Bottom position the bar reserves its strip of the screen, so maximized windows don't hide behind it. It always stays on top.
 - **Win + Ctrl + L** toggles captions, the same shortcut as Windows 11. A tray icon does too.
 - Caption styles (white on black, translucent, yellow on blue, black on white, green monospace), four text sizes, 1–5 lines, scroll back with the mouse wheel.
@@ -21,8 +25,19 @@ It listens to your speakers (and optionally your microphone), runs speech recogn
 
 - Windows 10, 64-bit (Windows 11 works too)
 - [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64), unless you build with `-SelfContained`
-- About 390 MB of disk for the two models; about 700 MB of RAM in use with both loaded
-- A 4+ core CPU is recommended for Whisper. On a Ryzen 5 5600G each sentence takes 0.5–2 s to refine, and captioning uses about one core while speech is playing. With Whisper off, it's about a third of a core. Both drop to near zero when nothing is playing.
+- For the full setup, a GPU with Vulkan support. Almost any from the last ~8 years qualifies, including Radeon/Intel integrated graphics; keep its driver up to date. Without one, Whisper runs on the CPU with small.en only and no live layer.
+
+Measured on a Ryzen 5 5600G using its integrated Radeon graphics:
+
+| | GPU (Vulkan) | CPU only |
+| --- | --- | --- |
+| Live pass (small.en) | 0.3–0.5 s, max 0.8 s | off |
+| Finished sentence | 0.6–1.9 s (large-v3-turbo) | 0.6–2 s (small.en) |
+| CPU use while speech plays | about half a core | about one core |
+| Memory | 1.3 GB | 0.7 GB |
+| Models on disk | 930 MB | 390 MB |
+
+CPU use drops to near zero when nothing is playing.
 
 ## Build and run
 
@@ -42,12 +57,13 @@ cd LiveCaptions10
 
 The build keeps the SDK, NuGet packages, caches and temp files inside `.tools\`, so nothing gets written to your system drive.
 
-On first start the bar offers to download the English speech files (Vosk, 128 MB). Turn on **High accuracy (Whisper)** in the settings menu to download the Whisper model (181 MB). Both go into `dist\data\`.
+On first start the bar offers to download the English speech files (Vosk, 128 MB). Turn on **High accuracy (Whisper)** in the settings menu to download small.en (181 MB). If you have a GPU, also download large-v3-turbo (547 MB) from **Whisper options**. Everything goes into `dist\data\`.
 
 ## Using it
 
 - **Win + Ctrl + L**, a left-click on the tray icon, or the ✕ on the bar turns captions on and off.
 - The **⚙ button** on the bar (or right-clicking the tray icon) opens the settings menu: position, style, text size, lines, Whisper, microphone, profanity filter, transcripts, language, start with Windows.
+- **Whisper options** controls what runs Whisper (Automatic / GPU / CPU; changing it restarts the app), which model finishes sentences, live updates while speaking, and model downloads.
 - In **Floating** mode, drag the bar anywhere and resize it from its edges.
 - Scroll up on the bar to reread earlier captions. It resumes following when you scroll back to the end.
 
@@ -65,7 +81,7 @@ Download a model for your language from [alphacephei.com/vosk/models](https://al
 | `--selftest <in.wav> <out.txt>` | Run a WAV through the recognizers and write the text and timings |
 | `--dump-audio <file.wav>` | Record exactly what the recognizer hears (for debugging) |
 
-Set `LIVECAPTIONS10_DATA` to use a different data folder.
+Set `LIVECAPTIONS10_DATA` to use a different data folder. For benchmarking with `--selftest`, `LC10_WHISPER_DEVICE` (`cpu`/`gpu`) and `LC10_WHISPER_MODEL` (a file name in `data\whisper`) override the automatic choices.
 
 ## How it works
 
@@ -76,19 +92,25 @@ microphone (optional) ───────┴─► 16 kHz mono ─► 100 ms j
                                                                        30 s queue
                                                                             │
                                                                             ▼
-                                             Vosk (recognizer thread): words appear as they're spoken
-                                                                            │  sentence ends
-                                                                            ▼
-                                             Whisper (worker thread): re-transcribes that sentence
-                                                                            │
-                                                                            ▼
-                                             caption bar (docked app bar) + optional transcript file
+                                     Vosk (recognizer thread): words appear as they're spoken
+                                          │                                 │
+                     every 0.5 s, the settled part                    sentence ends
+                     of the sentence so far                                 │
+                                          ▼                                 ▼
+                     Whisper small.en (GPU): live text          Whisper large-v3-turbo (GPU): final text
+                                          │                                 │
+                                          └──────────────┬──────────────────┘
+                                                         ▼
+                                     caption bar (docked app bar) + optional transcript file
 ```
 
 - Audio is converted to 16 kHz mono as each device packet arrives and held in a 100 ms jitter buffer. A real-time mixer thread drains it and synthesizes silence when nothing is playing (loopback sends no packets then).
 - The recognizer runs on its own thread behind a 30 s queue, so Vosk's bursty CPU use never makes the audio drop.
 - Vosk's word timestamps cut each sentence's audio exactly, so a sentence's first word isn't lost into the previous one. If there's no pause for 15 s (talking over music), a sentence break is forced.
-- Whisper normally encodes a fixed 30 s window. The app shrinks the encoder context to the sentence's length, which makes short sentences 3–7× faster with the same output. Known Whisper inventions on silence and music ("Thanks for watching!", repetition loops, "[Music]") are filtered out.
+- Whisper normally encodes a fixed 30 s window. The app shrinks the encoder context to fit the clip (in 0.5 s steps), which makes short sentences 3–7× faster. The fit has to be tight, because Whisper fills leftover silence with repeats of the clip's opening.
+- Whisper's temperature-fallback retries are off, and output length is capped at about 10 tokens per second of audio. On short, garbled clips the retries caused 20–30 s stalls. Known inventions ("Thanks for watching!", repetition loops, "[Music]", a repeated opening sentence) are filtered out.
+- Live passes stop at the end of Vosk's second-to-last word, because the last one is still changing. The dimmed tail starts after the Vosk word matching Whisper's last word.
+- Whisper uses (physical cores − 2) CPU threads, because its threads spin while waiting and would otherwise starve the instant recognizer.
 - When nothing has been playing for 2 s, the recognizer stops running entirely.
 
 ## Testing
@@ -103,7 +125,8 @@ powershell -ExecutionPolicy Bypass -File tools\live-test.ps1
 
 - Audio played in WASAPI *exclusive* mode (some games and pro-audio apps) can't be captured by loopback.
 - The instant (Vosk) text is lowercase until Whisper's version replaces it, and there's no speaker labelling.
-- Whisper is CPU-only here. On older dual-core machines, turn Whisper off.
+- Singing is hard for every model here, and so is very loud music under speech.
+- Without a GPU, only the finished-sentence pass runs, and on older dual-core machines Whisper is best turned off.
 
 ## Credits and licenses
 

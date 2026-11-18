@@ -11,6 +11,8 @@ using System.Threading.Tasks;
 
 namespace LiveCaptions10;
 
+internal sealed record WhisperDownload(string File, string Url, string Size, string Label);
+
 /// <summary>Finds and downloads the speech models (Vosk for instant words, Whisper for refined sentences).</summary>
 internal static class ModelManager
 {
@@ -109,20 +111,54 @@ internal static class ModelManager
 
     // ---------- Whisper ----------
 
-    /// <summary>The preferred Whisper model if present, else any ggml model in the whisper folder.</summary>
-    public static string? FindWhisperModel()
+    public static List<string> ListWhisperModels() =>
+        Directory.Exists(WhisperDir)
+            ? Directory.GetFiles(WhisperDir, "ggml-*.bin").OrderBy(f => new FileInfo(f).Length).ToList()
+            : new List<string>();
+
+    /// <summary>
+    /// The chosen model file if it exists; otherwise the biggest installed model when a GPU will run it,
+    /// or the default (small.en) on CPU, where large models are too slow for live use.
+    /// LC10_WHISPER_MODEL (a file name) overrides it, for benchmarking.
+    /// </summary>
+    public static string? FindWhisperModel(string? chosenFile = null, bool preferLarge = false)
     {
-        if (!Directory.Exists(WhisperDir)) return null;
-        var files = Directory.GetFiles(WhisperDir, "ggml-*.bin");
-        return files.FirstOrDefault(f => Path.GetFileName(f).Equals(WhisperModelName, StringComparison.OrdinalIgnoreCase))
-               ?? files.OrderByDescending(f => new FileInfo(f).Length).FirstOrDefault();
+        var files = ListWhisperModels();
+        if (files.Count == 0) return null;
+        foreach (var name in new[] { Environment.GetEnvironmentVariable("LC10_WHISPER_MODEL"), chosenFile })
+        {
+            var match = files.FirstOrDefault(f => Path.GetFileName(f).Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (match != null) return match;
+        }
+        if (preferLarge) return files[^1];
+        return files.FirstOrDefault(f => Path.GetFileName(f).Equals(WhisperModelName, StringComparison.OrdinalIgnoreCase)) ?? files[0];
     }
 
-    public static async Task<string> DownloadWhisperModelAsync(IProgress<double>? progress, CancellationToken ct)
+    public static string WhisperDisplayName(string path)
+    {
+        var name = Path.GetFileNameWithoutExtension(path);
+        name = name.StartsWith("ggml-", StringComparison.OrdinalIgnoreCase) ? name[5..] : name;
+        long mb = new FileInfo(path).Length / (1024 * 1024);
+        string hint = name.Contains("large", StringComparison.OrdinalIgnoreCase) ? "most accurate, best on GPU"
+                    : name.Contains("medium", StringComparison.OrdinalIgnoreCase) ? "accurate, best on GPU"
+                    : "fast, fine on CPU";
+        return $"{name}  ({mb} MB, {hint})";
+    }
+
+    /// <summary>Whisper models offered for download, smallest first.</summary>
+    public static readonly IReadOnlyList<WhisperDownload> WhisperDownloads = new[]
+    {
+        new WhisperDownload(WhisperModelName, WhisperModelUrl, WhisperModelSize, "small.en (fast, works on CPU)"),
+        new WhisperDownload("ggml-large-v3-turbo-q5_0.bin",
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin", "547 MB",
+            "large-v3-turbo (most accurate, needs a GPU)"),
+    };
+
+    public static async Task<string> DownloadWhisperModelAsync(WhisperDownload model, IProgress<double>? progress, CancellationToken ct)
     {
         Directory.CreateDirectory(WhisperDir);
-        var destination = Path.Combine(WhisperDir, WhisperModelName);
-        await DownloadFileAsync(WhisperModelUrl, destination, progress, ct);
+        var destination = Path.Combine(WhisperDir, model.File);
+        await DownloadFileAsync(model.Url, destination, progress, ct);
         return destination;
     }
 

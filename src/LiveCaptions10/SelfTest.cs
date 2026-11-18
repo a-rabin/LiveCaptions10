@@ -28,8 +28,8 @@ internal static class SelfTest
 
             var sentences = new List<(string Text, short[] Audio)>();
             int partials = 0;
-            engine.Partial += t => { if (t.Length > 0) partials++; };
-            engine.Final += (t, a) => sentences.Add((t, a));
+            engine.Partial += u => { if (u.Text.Length > 0) partials++; };
+            engine.Final += u => sentences.Add((u.Text, u.Audio));
 
             using var reader = new WaveFileReader(wavPath);
             var format = reader.WaveFormat;
@@ -60,20 +60,30 @@ internal static class SelfTest
             Array.Clear(pcm);
             for (int i = 0; i < 30; i++) engine.Accept(pcm, AudioPipeline.SampleRate / 10);
             var last = engine.Flush();
-            if (last.Text.Length > 0) sentences.Add(last);
+            if (last.Text.Length > 0) sentences.Add((last.Text, last.Audio));
 
             double audioSeconds = total / (double)AudioPipeline.SampleRate;
             double decodeSeconds = decodeClock.Elapsed.TotalSeconds;
             report.AppendLine($"converted={audioSeconds:F2}s (expected {reader.TotalTime.TotalSeconds:F2}s) vosk-decode={decodeSeconds:F2}s " +
                               $"realtime-factor={decodeSeconds / Math.Max(0.001, audioSeconds):F3} partial-updates={partials}");
 
-            var whisperModel = ModelManager.FindWhisperModel();
+            // Same automatic choices as the app; LC10_WHISPER_DEVICE / LC10_WHISPER_MODEL override them.
+            WhisperRuntime.Configure(ComputeDevice.Auto);
             WhisperRefiner? refiner = null;
-            if (whisperModel != null)
+            if (ModelManager.ListWhisperModels().Count > 0)
             {
+                WhisperRuntime.EnsureLoaded();
+                var finalModel = ModelManager.FindWhisperModel(null, preferLarge: WhisperRuntime.OnGpu)!;
+                var liveModel = WhisperRuntime.OnGpu ? ModelManager.ListWhisperModels()[0] : null;
                 loadClock.Restart();
-                refiner = new WhisperRefiner(whisperModel);
-                report.AppendLine($"whisper={Path.GetFileName(whisperModel)} load={loadClock.Elapsed.TotalSeconds:F1}s");
+                refiner = new WhisperRefiner(finalModel, liveModel);
+                report.AppendLine($"whisper={refiner.Description} on {WhisperRuntime.LoadedName} load={loadClock.Elapsed.TotalSeconds:F1}s");
+                if (sentences.Count > 0)
+                {
+                    refiner.Transcribe(sentences[0].Audio, out var warmup); // first call compiles GPU shaders etc.
+                    refiner.TranscribeLive(sentences[0].Audio, out var liveWarmup);
+                    report.AppendLine($"warm-up final={warmup.TotalSeconds:F2}s live={liveWarmup.TotalSeconds:F2}s");
+                }
             }
 
             using (refiner)
@@ -83,10 +93,25 @@ internal static class SelfTest
                     var draft = CaptionFormatter.FormatFinal(text, true);
                     report.AppendLine($"VOSK    ({audio.Length / (double)AudioPipeline.SampleRate:F1}s audio): {draft}");
                     if (refiner == null) continue;
+                    // Live passes as the app makes them: every 0.5 s of the sentence as it grows.
+                    var times = new List<double>();
+                    string? lastLive = null;
+                    for (int end = AudioPipeline.SampleRate; end <= audio.Length; end += AudioPipeline.SampleRate / 2)
+                    {
+                        var liveText = refiner.TranscribeLive(audio[..end], out var liveTook);
+                        if (liveText == null) continue;
+                        times.Add(liveTook.TotalSeconds);
+                        lastLive = liveText.Trim();
+                        if (Environment.GetEnvironmentVariable("LC10_SELFTEST_DETAIL") == "1")
+                            report.AppendLine($"  live pass {end / (double)AudioPipeline.SampleRate:F1}s ctx={refiner.LastLiveContext} {liveTook.TotalSeconds:F2}s");
+                    }
+                    if (times.Count > 0)
+                        report.AppendLine($"LIVE    ({times.Count} passes, avg {times.Average():F2}s, max {times.Max():F2}s): last = {lastLive}");
                     var raw = refiner.Transcribe(audio, out var took);
                     var refined = WhisperRefiner.Validate(raw, draft);
                     var shown = refined == null ? "(kept draft)" : refined.Length == 0 ? "(removed as noise)" : CaptionFormatter.FormatRefined(refined, true);
-                    report.AppendLine($"WHISPER ({took.TotalSeconds:F2}s): {shown}");
+                    report.AppendLine($"WHISPER ({took.TotalSeconds:F2}s, processor build {refiner.LastBuildTime.TotalMilliseconds:F0} ms): {shown}");
+                    report.AppendLine($"  raw: {raw?.Trim()}");
                 }
             }
 

@@ -100,6 +100,7 @@ public partial class App : Application
 
         settings = SettingsStore.Load();
         settings.Normalize();
+        WhisperRuntime.Configure(settings.WhisperDevice);
         saveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         saveTimer.Tick += (_, _) =>
         {
@@ -185,17 +186,18 @@ public partial class App : Application
         UpdateTray();
     }
 
-    void OnFinal(string raw, short[] sentenceAudio)
+    void OnFinal(FinalUpdate update)
     {
         if (window == null) return;
-        var (id, text) = window.ShowFinal(raw);
+        var (id, text) = window.ShowFinal(update);
         if (text.Length == 0) return;
         var whisper = refiner;
         if (whisper != null && settings.UseWhisper)
         {
-            // Show the instant draft now; Whisper's version replaces it when ready.
+            // Show the draft now; the final Whisper pass replaces it when ready. Its sanity checks compare
+            // against Vosk's own words, which are independent of Whisper.
             awaitingRefinement[id] = text;
-            whisper.Enqueue(id, text, sentenceAudio);
+            whisper.Enqueue(id, CaptionFormatter.FormatFinal(update.Text, false), update.Audio);
         }
         else
         {
@@ -257,8 +259,8 @@ public partial class App : Application
                 loaded.Dispose(); // a newer load superseded this one
                 return;
             }
-            loaded.Partial += text => Dispatcher.InvokeAsync(() => window?.ShowPartial(text));
-            loaded.Final += (text, sentenceAudio) => Dispatcher.InvokeAsync(() => OnFinal(text, sentenceAudio));
+            loaded.Partial += update => Dispatcher.InvokeAsync(() => window?.ShowPartial(update));
+            loaded.Final += update => Dispatcher.InvokeAsync(() => OnFinal(update));
             Interlocked.Exchange(ref engine, loaded)?.Dispose();
             settings.ModelPath = path;
             RequestSave();
@@ -275,22 +277,23 @@ public partial class App : Application
         UpdateStatus();
     }
 
+    /// <summary>(Re)loads Whisper to match the settings: off, or final model + optional live model.</summary>
     async Task LoadWhisperAsync()
     {
         int version = ++whisperLoadVersion;
+        var old = Interlocked.Exchange(ref refiner, null);
+        if (old != null)
+        {
+            await Task.Run(old.Dispose);
+            FlushAwaitingRefinement();
+        }
         if (!settings.UseWhisper)
         {
-            var old = Interlocked.Exchange(ref refiner, null);
             whisperState = WhisperState.Off;
             UpdateStatus();
-            if (old != null) await Task.Run(old.Dispose);
-            FlushAwaitingRefinement();
             return;
         }
-        if (refiner != null) return;
-
-        var path = ModelManager.FindWhisperModel();
-        if (path == null)
+        if (ModelManager.ListWhisperModels().Count == 0)
         {
             whisperState = WhisperState.Missing;
             UpdateStatus();
@@ -301,16 +304,29 @@ public partial class App : Application
         UpdateStatus();
         try
         {
-            var loaded = await Task.Run(() => new WhisperRefiner(path));
+            var chosenModel = settings.WhisperModel;
+            bool live = settings.LiveWhisper;
+            var loaded = await Task.Run(() =>
+            {
+                WhisperRuntime.EnsureLoaded();
+                bool gpu = WhisperRuntime.OnGpu;
+                // GPU: most accurate model for finished sentences, smallest (fastest) for live updates.
+                // CPU: one small model, no live passes (they would starve the instant recognizer).
+                var finalModel = ModelManager.FindWhisperModel(chosenModel, preferLarge: gpu)!;
+                var liveModel = gpu && live ? ModelManager.ListWhisperModels()[0] : null;
+                return new WhisperRefiner(finalModel, liveModel);
+            });
             if (version != whisperLoadVersion || exiting || !settings.UseWhisper)
             {
                 loaded.Dispose();
                 return;
             }
             loaded.Refined += (id, text) => Dispatcher.InvokeAsync(() => OnRefined(id, text));
+            loaded.LiveRefined += (snapshot, text) => Dispatcher.InvokeAsync(() => window?.ShowLive(snapshot, text));
+            loaded.LiveSource = (utterance, length, growth) => Volatile.Read(ref engine)?.SnapshotLive(utterance, length, growth);
             refiner = loaded;
             whisperState = WhisperState.Ready;
-            Log.Info("Loaded Whisper model " + path);
+            Log.Info($"Whisper on {WhisperRuntime.LoadedName}: {loaded.Description}");
         }
         catch (Exception ex)
         {
@@ -337,12 +353,38 @@ public partial class App : Application
         }
         settings.UseWhisper = !settings.UseWhisper;
         RequestSave();
-        if (settings.UseWhisper && ModelManager.FindWhisperModel() == null) StartWhisperDownload();
+        if (settings.UseWhisper && ModelManager.ListWhisperModels().Count == 0) StartWhisperDownload(ModelManager.WhisperDownloads[0]);
         else _ = LoadWhisperAsync();
     }
 
-    async void StartWhisperDownload()
+    void SetWhisperModel(string? fileName)
     {
+        settings.WhisperModel = fileName;
+        RequestSave();
+        _ = LoadWhisperAsync();
+    }
+
+    void ToggleLiveWhisper()
+    {
+        settings.LiveWhisper = !settings.LiveWhisper;
+        RequestSave();
+        _ = LoadWhisperAsync();
+    }
+
+    /// <summary>The native Whisper library can't be swapped in a running process, so restart.</summary>
+    void SetWhisperDevice(ComputeDevice device)
+    {
+        if (settings.WhisperDevice == device) return;
+        settings.WhisperDevice = device;
+        SettingsStore.Save(settings);
+        RestartApp();
+    }
+
+    async void StartWhisperDownload(WhisperDownload download)
+    {
+        if (whisperState == WhisperState.Downloading) return;
+        settings.UseWhisper = true;
+        RequestSave();
         whisperCts = new CancellationTokenSource();
         whisperState = WhisperState.Downloading;
         whisperProgress = 0;
@@ -354,14 +396,13 @@ public partial class App : Application
         });
         try
         {
-            await ModelManager.DownloadWhisperModelAsync(progress, whisperCts.Token);
+            await ModelManager.DownloadWhisperModelAsync(download, progress, whisperCts.Token);
             await LoadWhisperAsync();
             return;
         }
         catch (OperationCanceledException)
         {
-            settings.UseWhisper = false;
-            whisperState = WhisperState.Off;
+            whisperState = refiner != null ? WhisperState.Ready : WhisperState.Off;
         }
         catch (Exception ex)
         {
@@ -374,7 +415,7 @@ public partial class App : Application
 
     string WhisperStatusText() => whisperState switch
     {
-        WhisperState.Ready => "Whisper refining on",
+        WhisperState.Ready => $"Whisper on {WhisperRuntime.LoadedName}: {refiner?.Description}",
         WhisperState.Loading => "loading Whisper…",
         WhisperState.Downloading => $"downloading Whisper model {whisperProgress:0%}",
         WhisperState.Missing => "Whisper model not installed",
@@ -528,6 +569,7 @@ public partial class App : Application
         items.Add(new Forms.ToolStripSeparator());
 
         items.Add(WhisperMenuItem());
+        items.Add(WhisperOptionsMenu());
         items.Add(Item("Include microphone audio", ToggleMicrophone, settings.IncludeMicrophone));
         items.Add(Item("Filter profanity", () => Change(() => settings.FilterProfanity = !settings.FilterProfanity), settings.FilterProfanity));
         items.Add(Sub("Transcripts",
@@ -569,12 +611,48 @@ public partial class App : Application
             WhisperState.Downloading => $"Downloading Whisper model… {whisperProgress:0%}  (click to cancel)",
             WhisperState.Loading => "High accuracy (Whisper): loading…",
             WhisperState.Failed => "High accuracy (Whisper): failed, click to retry",
-            _ when ModelManager.FindWhisperModel() == null => $"High accuracy (Whisper): download model ({ModelManager.WhisperModelSize})",
+            _ when ModelManager.ListWhisperModels().Count == 0 => $"High accuracy (Whisper): download model ({ModelManager.WhisperModelSize})",
             _ => "High accuracy (Whisper)",
         };
         var item = Item(text, ToggleWhisper, isChecked: settings.UseWhisper && whisperState is WhisperState.Ready or WhisperState.Loading);
-        item.ToolTipText = "Re-transcribes each finished sentence with Whisper: much better on videos, adds punctuation. Uses more CPU.";
+        item.ToolTipText = "Whisper re-transcribes what was said: much better on videos and fast speech, adds punctuation.";
         return item;
+    }
+
+    Forms.ToolStripMenuItem WhisperOptionsMenu()
+    {
+        var installed = ModelManager.ListWhisperModels();
+        bool gpu = WhisperRuntime.OnGpu;
+
+        var device = Sub($"Run on (now: {WhisperRuntime.LoadedName})",
+            Item("Automatic: GPU if available, else CPU", () => SetWhisperDevice(ComputeDevice.Auto), settings.WhisperDevice == ComputeDevice.Auto),
+            Item("GPU (Vulkan)", () => SetWhisperDevice(ComputeDevice.Gpu), settings.WhisperDevice == ComputeDevice.Gpu),
+            Item("CPU", () => SetWhisperDevice(ComputeDevice.Cpu), settings.WhisperDevice == ComputeDevice.Cpu));
+        device.ToolTipText = "Changing this restarts Live Captions.";
+
+        var model = new Forms.ToolStripMenuItem("Model for finished sentences");
+        model.DropDownItems.Add(Item("Automatic (largest on GPU, small.en on CPU)", () => SetWhisperModel(null), settings.WhisperModel == null));
+        foreach (var path in installed)
+        {
+            var file = Path.GetFileName(path);
+            model.DropDownItems.Add(Item(ModelManager.WhisperDisplayName(path), () => SetWhisperModel(file),
+                string.Equals(settings.WhisperModel, file, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        var options = Sub("Whisper options", device, model,
+            Item(gpu ? "Live updates while speaking" : "Live updates while speaking (needs GPU)", ToggleLiveWhisper,
+                isChecked: settings.LiveWhisper && gpu, enabled: gpu));
+        var missing = ModelManager.WhisperDownloads.Where(d => !installed.Any(p => Path.GetFileName(p).Equals(d.File, StringComparison.OrdinalIgnoreCase))).ToList();
+        if (missing.Count > 0)
+        {
+            options.DropDownItems.Add(new Forms.ToolStripSeparator());
+            foreach (var download in missing)
+                options.DropDownItems.Add(Item($"Download {download.Label}, {download.Size}", () => StartWhisperDownload(download),
+                    enabled: whisperState != WhisperState.Downloading));
+        }
+        options.DropDownItems.Add(new Forms.ToolStripSeparator());
+        options.DropDownItems.Add(Item("Open Whisper models folder", () => OpenFolder(ModelManager.WhisperDir)));
+        return options;
     }
 
     Forms.ToolStripMenuItem Item(string text, Action onClick, bool isChecked = false, bool enabled = true, string? shortcut = null)
@@ -684,8 +762,25 @@ public partial class App : Application
         FlushAwaitingRefinement();
         saveTimer?.Stop();
         SettingsStore.Save(settings);
+        try
+        {
+            instanceMutex?.ReleaseMutex();
+        }
+        catch (ApplicationException)
+        {
+            // not owned by this thread
+        }
         instanceMutex?.Dispose();
+        instanceMutex = null;
         Log.Info("Exited");
         Shutdown();
+    }
+
+    /// <summary>Starts a fresh copy (after this one has released the single-instance lock) and exits.</summary>
+    void RestartApp()
+    {
+        var exe = Environment.ProcessPath;
+        ExitApp();
+        if (exe != null) Process.Start(new ProcessStartInfo(exe) { UseShellExecute = false });
     }
 }

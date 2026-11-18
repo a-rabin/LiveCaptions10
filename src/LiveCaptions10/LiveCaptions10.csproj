@@ -28,6 +28,17 @@
     <PackageReference Include="Vosk" Version="0.3.38" />
     <PackageReference Include="Whisper.net" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime.Vulkan" Version="1.9.1" />
   </ItemGroup>
+
+  <!-- Only the win-x64 native libraries are used; drop the other platforms' copies (~60 MB). -->
+  <Target Name="RemoveForeignNativeLibs" AfterTargets="Publish">
+    <ItemGroup>
+      <_ForeignRuntimeDirs Include="$([System.IO.Directory]::GetDirectories('$(PublishDir)runtimes', '*', System.IO.SearchOption.AllDirectories))"
+                           Condition="Exists('$(PublishDir)runtimes')" />
+      <_ForeignRuntimeDirs Remove="@(_ForeignRuntimeDirs)" Condition="'%(Filename)%(Extension)' == 'win-x64' Or '%(Filename)%(Extension)' == 'vulkan'" />
+    </ItemGroup>
+    <RemoveDir Directories="@(_ForeignRuntimeDirs)" />
+  </Target>
 
 </Project>

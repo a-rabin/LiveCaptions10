@@ -36,7 +36,11 @@ Start-Sleep -Seconds 5
 "work area docked: " + [W2]::WorkArea()
 $cpu0 = (Get-Process -Id $p.Id).TotalProcessorTime; $t0 = Get-Date
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Volume = 60
-$s.Speak("Good evening, and welcome to the news. Tonight, scientists in Canada announced a new way to recycle plastic bottles.")
+$s.SpeakAsync("Good evening, and welcome to the news. Tonight, scientists in Canada announced a new way to recycle plastic bottles.") | Out-Null
+Start-Sleep -Milliseconds 4500   # mid-sentence: shows live text and the dimmed newest words
+$r = [W2]::FirstVisible($p.Id)
+if ($r) { $bmp = New-Object System.Drawing.Bitmap $r[2], $r[3]; $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($r[0], $r[1], 0, 0, $bmp.Size); $g.Dispose(); $bmp.Save((Join-Path $sp "bar-$Tag-mid.png")); $bmp.Dispose() }
+while ($s.State -eq 'Speaking') { Start-Sleep -Milliseconds 100 }
 Start-Sleep -Milliseconds 800
 $s.Speak("Do you think this will help the environment? Experts say it could reduce waste by half by next September.")
 Start-Sleep -Seconds 3   # let the last sentence finish and its Whisper pass replace the draft

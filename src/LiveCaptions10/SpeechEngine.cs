@@ -5,6 +5,18 @@ using Vosk;
 
 namespace LiveCaptions10;
 
+/// <summary>A recognized word with its time on the recognizer's clock (seconds of audio fed).</summary>
+internal readonly record struct TimedWord(string Word, double Start, double End);
+
+/// <summary>The sentence in progress. Utterance numbers increase with every finished sentence.</summary>
+internal sealed record PartialUpdate(long Utterance, string Text);
+
+/// <summary>A finished sentence, its words and the audio it was recognized from.</summary>
+internal sealed record FinalUpdate(long Utterance, string Text, TimedWord[] Words, short[] Audio);
+
+/// <summary>Audio of the sentence in progress up to the end of its last settled word (of which there are CoveredWords).</summary>
+internal sealed record LiveSnapshot(long Utterance, short[] Audio, double CoveredUntil, int CoveredWords);
+
 /// <summary>Offline streaming speech recognition (Vosk / Kaldi). Thread-safe.</summary>
 internal sealed class SpeechEngine : IDisposable
 {
@@ -29,6 +41,7 @@ internal sealed class SpeechEngine : IDisposable
     short[] utterance = new short[AudioPipeline.SampleRate * 8];
     int utteranceLength;
     long fedSamples, utteranceStart;
+    long utteranceNumber = 1;
     bool warnedClock;
 
     public SpeechEngine(string modelPath)
@@ -39,21 +52,24 @@ internal sealed class SpeechEngine : IDisposable
         model = new Model(modelPath);
         recognizer = new VoskRecognizer(model, AudioPipeline.SampleRate);
         recognizer.SetMaxAlternatives(0);
-        recognizer.SetWords(true); // word timings, used to cut each sentence's audio precisely
+        recognizer.SetWords(true);        // word timings, used to cut each sentence's audio precisely
+        // Partial-word timings make Vosk refresh its partial text ~3x less often, so they are only switched
+        // on for the one call that takes a live snapshot (see SnapshotLive).
+        recognizer.SetPartialWords(false);
     }
 
     public string ModelPath { get; }
 
-    /// <summary>The words of the utterance in progress (may be revised). Empty clears it.</summary>
-    public event Action<string>? Partial;
+    /// <summary>The words of the utterance in progress (may be revised). Empty text clears it.</summary>
+    public event Action<PartialUpdate>? Partial;
 
-    /// <summary>A finished utterance and the audio it was recognized from.</summary>
-    public event Action<string, short[]>? Final;
+    /// <summary>A finished utterance.</summary>
+    public event Action<FinalUpdate>? Final;
 
     public void Accept(short[] pcm, int count)
     {
-        string? partial = null, final = null;
-        short[]? finalAudio = null;
+        PartialUpdate? partial = null;
+        FinalUpdate? final = null;
         lock (gate)
         {
             if (disposed) return;
@@ -78,10 +94,7 @@ internal sealed class SpeechEngine : IDisposable
 
             if (finalJson != null)
             {
-                final = Extract(finalJson, "text");
-                finalAudio = TakeUtterance(finalJson);
-                lastPartial = "";
-                samplesSincePartial = 0;
+                final = Finish(finalJson);
             }
             else
             {
@@ -93,7 +106,7 @@ internal sealed class SpeechEngine : IDisposable
                     if (p != lastPartial)
                     {
                         lastPartial = p;
-                        partial = p;
+                        partial = new PartialUpdate(utteranceNumber, p);
                     }
                 }
             }
@@ -101,8 +114,8 @@ internal sealed class SpeechEngine : IDisposable
 
         if (final != null)
         {
-            if (final.Length > 0) Final?.Invoke(final, finalAudio!);
-            else Partial?.Invoke("");
+            if (final.Text.Length > 0) Final?.Invoke(final);
+            else Partial?.Invoke(new PartialUpdate(final.Utterance, ""));
         }
         else if (partial != null)
         {
@@ -110,15 +123,66 @@ internal sealed class SpeechEngine : IDisposable
         }
     }
 
-    /// <summary>Finishes the current utterance and returns its text and audio.</summary>
-    public (string Text, short[] Audio) Flush()
+    /// <summary>Finishes the current utterance and returns it.</summary>
+    public FinalUpdate Flush()
     {
         lock (gate)
         {
-            if (disposed) return ("", Array.Empty<short>());
-            lastPartial = "";
-            var json = recognizer.FinalResult();
-            return (Extract(json, "text"), TakeUtterance(json));
+            if (disposed) return new FinalUpdate(0, "", Array.Empty<TimedWord>(), Array.Empty<short>());
+            return Finish(recognizer.FinalResult());
+        }
+    }
+
+    /// <summary>
+    /// For live Whisper: the sentence in progress, cut after its second-to-last word (the last one is still
+    /// changing). Returns null unless it has grown by at least <paramref name="minGrowth"/> samples since
+    /// the caller's previous snapshot of the same sentence, so polling stays cheap.
+    /// </summary>
+    public LiveSnapshot? SnapshotLive(long previousUtterance, int previousLength, int minGrowth)
+    {
+        lock (gate)
+        {
+            if (disposed || warnedClock || lastPartial.Length == 0 || utteranceLength < AudioPipeline.SampleRate / 2) return null;
+            if (previousUtterance == utteranceNumber && utteranceLength < previousLength + minGrowth) return null; // cheap check first
+
+            recognizer.SetPartialWords(true);
+            var words = ParseWords(recognizer.PartialResult(), "partial_result");
+            recognizer.SetPartialWords(false);
+            if (words.Length < 2) return null;
+
+            double coveredUntil = words[^2].End + 0.08;
+            long cut = Math.Min(utteranceLength, (long)(coveredUntil * AudioPipeline.SampleRate) - utteranceStart);
+            if (cut < AudioPipeline.SampleRate / 2) return null;
+            if (previousUtterance == utteranceNumber && cut < previousLength + minGrowth) return null;
+            return new LiveSnapshot(utteranceNumber, utterance[..(int)cut], coveredUntil, words.Length - 1);
+        }
+    }
+
+    FinalUpdate Finish(string json)
+    {
+        var update = new FinalUpdate(utteranceNumber, Extract(json, "text"), ParseWords(json, "result"), TakeUtterance(json));
+        utteranceNumber++;
+        lastPartial = "";
+        samplesSincePartial = 0;
+        return update;
+    }
+
+    static TimedWord[] ParseWords(string json, string property)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty(property, out var words) || words.ValueKind != JsonValueKind.Array)
+                return Array.Empty<TimedWord>();
+            var result = new TimedWord[words.GetArrayLength()];
+            int i = 0;
+            foreach (var w in words.EnumerateArray())
+                result[i++] = new TimedWord(w.GetProperty("word").GetString() ?? "", w.GetProperty("start").GetDouble(), w.GetProperty("end").GetDouble());
+            return result;
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            return Array.Empty<TimedWord>();
         }
     }
 
@@ -184,6 +248,7 @@ internal sealed class SpeechEngine : IDisposable
             samplesSincePartial = 0;
             utteranceStart = fedSamples; // Vosk's clock keeps running across resets
             utteranceLength = 0;
+            utteranceNumber++;
         }
     }
 

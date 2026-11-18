@@ -22,6 +22,9 @@ internal sealed class AppSettings
     public bool FilterProfanity { get; set; } = true;
     public bool SaveTranscript { get; set; }
     public bool UseWhisper { get; set; } = true;
+    public ComputeDevice WhisperDevice { get; set; } = ComputeDevice.Auto;
+    public bool LiveWhisper { get; set; } = true; // live Whisper updates while speaking (GPU only)
+    public string? WhisperModel { get; set; } // file name in data\whisper; null = pick automatically
     public string Style { get; set; } = CaptionStyles.Default.Key;
     public double FontSize { get; set; } = 20;
     public int Lines { get; set; } = 2;
