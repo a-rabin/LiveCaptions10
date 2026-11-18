@@ -1,0 +1,20 @@
+# build output
+bin/
+obj/
+dist/
+
+# local SDK, NuGet packages, caches and temp files (see build.ps1)
+.tools/
+
+# speech models and app data are downloaded at runtime, never committed
+data/
+models/
+*.bin
+*.zip
+*.part
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
