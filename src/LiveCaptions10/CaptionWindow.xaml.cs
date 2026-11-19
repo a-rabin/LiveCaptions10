@@ -111,6 +111,8 @@ internal partial class CaptionWindow : Window
 
     public void HideCaptions()
     {
+        StopTyping();
+        shown = target.Length;
         appBar.Undock();
         Hide();
     }
@@ -289,7 +291,7 @@ internal partial class CaptionWindow : Window
         {
             id = ++lastSegmentId;
             segments.Add(new Segment(id, text, utteranceOpen ? partialBreak : StartsNewParagraph()));
-            if (segments.Count > MaxSegments) segments.RemoveRange(0, segments.Count - MaxSegments);
+            TrimOldSegments();
             lastFinalUtc = DateTime.UtcNow;
         }
         utteranceOpen = false;
@@ -314,6 +316,8 @@ internal partial class CaptionWindow : Window
         live = null;
         utteranceOpen = false;
         autoScroll = true;
+        target = "";
+        shown = 0;
         Render();
     }
 
@@ -385,18 +389,141 @@ internal partial class CaptionWindow : Window
         return (main, tail);
     }
 
+    // ---------- drawing, with optional letter-by-letter reveal ----------
+    //
+    // Recognizers deliver text in blocks (a few words every ~0.3 s), which reads as jerky. With the
+    // typewriter setting on, `target` is the full text as it should end up and `shown` is how much of it
+    // is on screen; each frame types more of it at a rate that finishes about when the next block is
+    // due, so text flows continuously. If the recognizer revises earlier words, the screen erases back to
+    // the first changed character and types on from there.
+
+    const double MinTypingCharsPerSecond = 20;
+    string target = "";
+    int tailStart;               // where the dimmed (unconfirmed) words begin in target
+    int shown;                   // characters of target on screen
+    double arrivalInterval = 0.5; // seconds between text deliveries (averaged)
+    double typingRate;           // characters per second for the text currently being typed
+    double typingBudget;
+    DateTime lastGrowthUtc = DateTime.MinValue;
+    TimeSpan lastFrame;
+    bool typing;
+
     void Render()
     {
-        var settled = new StringBuilder();
-        foreach (var s in segments) Append(settled, s.Text, s.BreakBefore);
+        var text = new StringBuilder();
+        foreach (var s in segments) Append(text, s.Text, s.BreakBefore);
         var (main, tail) = InProgress();
-        if (main.Length > 0) Append(settled, main, partialBreak);
+        if (main.Length > 0) Append(text, main, partialBreak);
+        int newTailStart = text.Length;
+        if (tail.Length > 0) text.Append(text.Length > 0 ? " " : "").Append(tail);
+        var newTarget = text.ToString();
 
+        bool typewriter = settings.Reveal != TextReveal.Instant && IsVisible;
+        if (typewriter)
+        {
+            shown = Math.Min(shown, CommonPrefix(target, newTarget, shown)); // erase revised text
+            if (newTarget.Length > target.Length) NoteGrowth();
+        }
+        else
+        {
+            shown = newTarget.Length;
+        }
+        target = newTarget;
+        tailStart = newTailStart;
+
+        // Type what's outstanding at a steady pace: spread over (part of) the expected gap before the
+        // next delivery. Recomputed on every change, so it speeds up if it falls behind.
+        if (typewriter)
+        {
+            double window = settings.Reveal == TextReveal.Smooth
+                ? Math.Clamp(arrivalInterval * 0.9, 0.12, 1.5)
+                : Math.Clamp(arrivalInterval * 0.35, 0.12, 0.45);
+            typingRate = Math.Max(MinTypingCharsPerSecond, (target.Length - shown) / window);
+        }
+
+        Draw();
+        StatusPanel.Visibility = target.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
+        if (shown < target.Length) StartTyping();
+    }
+
+    void Draw()
+    {
+        int visible = Math.Min(shown, target.Length);
         CaptionText.Inlines.Clear();
-        AddText(settled.ToString(), null);
-        if (tail.Length > 0) AddText((settled.Length > 0 ? " " : "") + tail, tailBrush);
-        StatusPanel.Visibility = settled.Length + tail.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
+        AddText(target[..Math.Min(visible, tailStart)], null);
+        if (visible > tailStart) AddText(target[tailStart..visible], tailBrush);
         if (autoScroll) Scroller.ScrollToEnd();
+    }
+
+    static int CommonPrefix(string a, string b, int limit)
+    {
+        int n = Math.Min(limit, Math.Min(a.Length, b.Length)), i = 0;
+        while (i < n && a[i] == b[i]) i++;
+        return i;
+    }
+
+    /// <summary>Tracks how often new text arrives (every ~1.3 s for Kroko, ~0.3 s for Vosk).</summary>
+    void NoteGrowth()
+    {
+        var now = DateTime.UtcNow;
+        double interval = (now - lastGrowthUtc).TotalSeconds;
+        lastGrowthUtc = now;
+        if (interval > 0.05 && interval < 3) arrivalInterval = arrivalInterval * 0.7 + interval * 0.3;
+    }
+
+    void StartTyping()
+    {
+        if (typing) return;
+        typing = true;
+        lastFrame = TimeSpan.Zero;
+        CompositionTarget.Rendering += OnTypingFrame;
+    }
+
+    void StopTyping()
+    {
+        if (!typing) return;
+        typing = false;
+        typingBudget = 0;
+        CompositionTarget.Rendering -= OnTypingFrame;
+    }
+
+    void OnTypingFrame(object? sender, EventArgs e)
+    {
+        var now = ((RenderingEventArgs)e).RenderingTime;
+        if (now == lastFrame) return; // raised more than once per frame
+        double dt = lastFrame == TimeSpan.Zero ? 1 / 60.0 : Math.Min(0.1, (now - lastFrame).TotalSeconds);
+        lastFrame = now;
+
+        int remaining = target.Length - shown;
+        if (remaining <= 0 || settings.Reveal == TextReveal.Instant || !IsVisible)
+        {
+            shown = target.Length;
+            Draw();
+            StopTyping();
+            return;
+        }
+
+        typingBudget += Math.Max(MinTypingCharsPerSecond, typingRate) * dt;
+        int step = (int)typingBudget;
+        if (step == 0) return;
+        typingBudget -= step;
+        shown = Math.Min(target.Length, shown + step);
+        Draw();
+        if (shown >= target.Length) StopTyping();
+    }
+
+    /// <summary>Drops the oldest sentences, keeping the on-screen text aligned with the target.</summary>
+    void TrimOldSegments()
+    {
+        int extra = segments.Count - MaxSegments;
+        if (extra <= 0) return;
+        var removed = new StringBuilder();
+        for (int i = 0; i < extra; i++) Append(removed, segments[i].Text, segments[i].BreakBefore);
+        int cut = Math.Min(target.Length, removed.Length + 1); // + the separator before the new first sentence
+        target = target[cut..];
+        tailStart = Math.Max(0, tailStart - cut);
+        shown = Math.Max(0, shown - cut);
+        segments.RemoveRange(0, extra);
     }
 
     void AddText(string text, Brush? brush)

@@ -55,7 +55,10 @@ internal static class CaptionFormatter
         if (text.Length == 0 || NoiseOnly.Contains(text.ToLowerInvariant())) return "";
         char last = text[^1];
         if (last is '.' or '?' or '!') return text;
-        return text + (LooksLikeQuestion(text) ? "?" : ".");
+        // Judge only the last sentence: "Do you think...? Experts say..." is not a question at the end.
+        int previousEnd = text.LastIndexOfAny(new[] { '.', '?', '!' });
+        var lastSentence = text[(previousEnd + 1)..].TrimStart();
+        return text + (lastSentence.Length > 0 && LooksLikeQuestion(lastSentence) ? "?" : ".");
     }
 
     static string Clean(string raw, bool filterProfanity, bool capitalize = true)

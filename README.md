@@ -83,6 +83,30 @@ Download a model for your language from [alphacephei.com/vosk/models](https://al
 
 Set `LIVECAPTIONS10_DATA` to use a different data folder. For benchmarking with `--selftest`, `LC10_WHISPER_DEVICE` (`cpu`/`gpu`) and `LC10_WHISPER_MODEL` (a file name in `data\whisper`) override the automatic choices.
 
+## Streaming engines (prototype)
+
+The `prototype/sherpa-onnx-streaming` branch adds streaming transducer models via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), the same family of model Windows 11 Live Captions uses. They process each slice of audio once and emit words as they're heard, instead of re-reading whole clips like Whisper. Pick one under ⚙ → **Speech engine**.
+
+Word error rate on synthetic test clips (Windows voices, lower is better), plus CPU time per second of audio on a Ryzen 5 5600G:
+
+| Engine | Clean | Fast speech (2 voices) | Fast + music bed | CPU per second |
+| --- | --- | --- | --- | --- |
+| Vosk lgraph (original) | 6.5–9.7% | 6.9–16.7% | 37.5% | 0.68–1.57 s |
+| NeMo streaming FastConformer 480 ms | 3.2% | 16.7–18.1% | 23.6% | 0.10 s |
+| **Kroko streaming Zipformer** | **0.0%** | **1.4–4.2%** | **4.2%** | **0.06 s** |
+
+Delay is the trade-off. A streaming model decodes in fixed chunks set when it's exported. Kroko's are 1.28 s, so its words appear about 1.3 s after they're spoken, in blocks; NeMo updates every 0.56 s and Vosk every 0.3–0.4 s. Kroko's larger Community "L" packages ([huggingface.co/Banafo/Kroko-ASR](https://huggingface.co/Banafo/Kroko-ASR), unpacked automatically from `data\sherpa\*.data`) use the same 1.28 s chunks ("64-L") or 2.56 s ("128-L"), so none is faster. To keep the blocks from feeling jerky, ⚙ → **Text appears** types new text out letter by letter. *Smooth* spreads each block evenly until the next one arrives, *Quick* types it in about a third of that gap, and *All at once* turns the effect off.
+
+Kroko also writes its own punctuation and capitalization. With Kroko, a second pass added little. Parakeet TDT 0.6B (CPU, about 1 s per sentence) and Whisper turbo (GPU, about 3 s) each fixed some words and broke others, and Whisper sometimes repeated a sentence. So Kroko alone is the recommended setup: about 0.16 of a CPU core for the whole app while speech plays, no GPU, 300 MB of RAM.
+
+Prototype setup: unpack these into `data\sherpa\` (there's no in-app download for them yet):
+
+- [`sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06`](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2) (54 MB, [CC-BY-SA](https://huggingface.co/Banafo/Kroko-ASR))
+- optional: [`sherpa-onnx-nemo-streaming-fast-conformer-transducer-en-480ms-int8`](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-streaming-fast-conformer-transducer-en-480ms-int8.tar.bz2) (101 MB, CC-BY-4.0), which needs [`sherpa-onnx-online-punct-en-2024-08-06`](https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-online-punct-en-2024-08-06.tar.bz2) (29 MB) for punctuation
+- optional second pass: [`sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8`](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2) (460 MB, CC-BY-4.0)
+
+`--selftest` takes `LC10_ENGINE` (`vosk` / `nemo` / `kroko`) and `LC10_SECOND` (`whisper` / `parakeet` / `none`) for benchmarking.
+
 ## How it works
 
 ```

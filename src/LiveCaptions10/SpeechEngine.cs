@@ -18,7 +18,7 @@ internal sealed record FinalUpdate(long Utterance, string Text, TimedWord[] Word
 internal sealed record LiveSnapshot(long Utterance, short[] Audio, double CoveredUntil, int CoveredWords);
 
 /// <summary>Offline streaming speech recognition (Vosk / Kaldi). Thread-safe.</summary>
-internal sealed class SpeechEngine : IDisposable
+internal sealed class SpeechEngine : IRecognizer
 {
     const short SilenceLevel = 40;                                  // ≈ -58 dBFS
     const int SilenceSkipAfter = AudioPipeline.SampleRate * 2;      // keep feeding 2 s so the last sentence finishes
@@ -59,6 +59,8 @@ internal sealed class SpeechEngine : IDisposable
     }
 
     public string ModelPath { get; }
+
+    public string Name => "Vosk";
 
     /// <summary>The words of the utterance in progress (may be revised). Empty text clears it.</summary>
     public event Action<PartialUpdate>? Partial;

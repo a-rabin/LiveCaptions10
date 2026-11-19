@@ -20,15 +20,41 @@ internal static class SelfTest
         var report = new StringBuilder();
         try
         {
-            var model = modelPath ?? ModelManager.FindModels().FirstOrDefault()
-                ?? throw new InvalidOperationException("No speech model installed in " + ModelManager.ModelsDir);
+            // LC10_ENGINE = vosk | nemo | kroko picks the streaming recognizer (default vosk).
+            var kind = Environment.GetEnvironmentVariable("LC10_ENGINE")?.ToLowerInvariant() switch
+            {
+                "nemo" => RecognizerKind.NemoStreaming,
+                "kroko" => RecognizerKind.Kroko,
+                "krokol64" => RecognizerKind.KrokoLFast,
+                "krokol128" => RecognizerKind.KrokoL,
+                _ => RecognizerKind.Vosk,
+            };
             var loadClock = Stopwatch.StartNew();
-            using var engine = new SpeechEngine(model);
-            report.AppendLine($"vosk={Path.GetFileName(model)} load={loadClock.Elapsed.TotalSeconds:F1}s");
+            IRecognizer engine;
+            if (kind == RecognizerKind.Vosk)
+            {
+                var model = modelPath ?? ModelManager.FindModels().FirstOrDefault()
+                    ?? throw new InvalidOperationException("No speech model installed in " + ModelManager.ModelsDir);
+                engine = new SpeechEngine(model);
+            }
+            else
+            {
+                engine = new SherpaEngine(kind, SherpaModels.Streaming(kind) ?? throw new InvalidOperationException(kind + " not installed"),
+                    SherpaModels.Punctuation);
+            }
+            using var engineScope = engine;
+            report.AppendLine($"engine={engine.Name} ({Path.GetFileName(engine.ModelPath)}) load={loadClock.Elapsed.TotalSeconds:F1}s");
 
             var sentences = new List<(string Text, short[] Audio)>();
             int partials = 0;
-            engine.Partial += u => { if (u.Text.Length > 0) partials++; };
+            long total = 0, speechStart = -1;
+            var updateTimes = new List<double>(); // audio position (s) each time the text changed
+            engine.Partial += u =>
+            {
+                if (u.Text.Length == 0) return;
+                partials++;
+                updateTimes.Add(total / (double)AudioPipeline.SampleRate);
+            };
             engine.Final += u => sentences.Add((u.Text, u.Audio));
 
             using var reader = new WaveFileReader(wavPath);
@@ -42,18 +68,23 @@ internal static class SelfTest
             var packet = new byte[packetBytes];
             var floats = new float[AudioPipeline.SampleRate];
             var pcm = new short[AudioPipeline.SampleRate];
-            long total = 0;
             var decodeClock = Stopwatch.StartNew();
 
+            // Feed in 50 ms chunks, like the app's recognizer thread.
             int read;
             while ((read = reader.Read(packet, 0, packet.Length)) > 0)
             {
                 converter.Push(packet, read, queue, gate);
-                int n = queue.Read(floats, floats.Length);
-                if (n == 0) continue;
-                AudioConvert.ToPcm16(floats, pcm, n);
-                engine.Accept(pcm, n);
-                total += n;
+                while (queue.Count >= AudioPipeline.SampleRate / 20)
+                {
+                    int n = queue.Read(floats, AudioPipeline.SampleRate / 20);
+                    AudioConvert.ToPcm16(floats, pcm, n);
+                    if (speechStart < 0)
+                        for (int i = 0; i < n; i++)
+                            if (Math.Abs((int)pcm[i]) > 1000) { speechStart = total + i; break; }
+                    total += n;
+                    engine.Accept(pcm, n);
+                }
             }
 
             // Trailing silence, like the live mixer produces when playback stops.
@@ -64,20 +95,37 @@ internal static class SelfTest
 
             double audioSeconds = total / (double)AudioPipeline.SampleRate;
             double decodeSeconds = decodeClock.Elapsed.TotalSeconds;
-            report.AppendLine($"converted={audioSeconds:F2}s (expected {reader.TotalTime.TotalSeconds:F2}s) vosk-decode={decodeSeconds:F2}s " +
+            report.AppendLine($"converted={audioSeconds:F2}s (expected {reader.TotalTime.TotalSeconds:F2}s) decode={decodeSeconds:F2}s " +
                               $"realtime-factor={decodeSeconds / Math.Max(0.001, audioSeconds):F3} partial-updates={partials}");
-
-            // Same automatic choices as the app; LC10_WHISPER_DEVICE / LC10_WHISPER_MODEL override them.
-            WhisperRuntime.Configure(ComputeDevice.Auto);
-            WhisperRefiner? refiner = null;
-            if (ModelManager.ListWhisperModels().Count > 0)
+            if (updateTimes.Count > 1 && speechStart >= 0)
             {
+                var gaps = updateTimes.Zip(updateTimes.Skip(1), (a, b) => b - a).ToList();
+                report.AppendLine($"delay: first-words={updateTimes[0] - speechStart / (double)AudioPipeline.SampleRate:F2}s " +
+                                  $"update-every={gaps.Average():F2}s (max {gaps.Max():F2}s)");
+            }
+
+            // Second pass: LC10_SECOND = whisper (default, same automatic choices as the app;
+            // LC10_WHISPER_DEVICE / LC10_WHISPER_MODEL override them) | parakeet | none.
+            var second = Environment.GetEnvironmentVariable("LC10_SECOND")?.ToLowerInvariant() ?? "whisper";
+            WhisperRefiner? refiner = null;
+            if (second == "parakeet")
+            {
+                loadClock.Restart();
+                refiner = WhisperRefiner.CreateParakeet(SherpaModels.Parakeet ?? throw new InvalidOperationException("Parakeet not installed"));
+                report.AppendLine($"second={refiner.Description} on CPU load={loadClock.Elapsed.TotalSeconds:F1}s");
+            }
+            else if (second == "whisper" && ModelManager.ListWhisperModels().Count > 0)
+            {
+                WhisperRuntime.Configure(ComputeDevice.Auto);
                 WhisperRuntime.EnsureLoaded();
                 var finalModel = ModelManager.FindWhisperModel(null, preferLarge: WhisperRuntime.OnGpu)!;
-                var liveModel = WhisperRuntime.OnGpu ? ModelManager.ListWhisperModels()[0] : null;
+                var liveModel = WhisperRuntime.OnGpu && kind == RecognizerKind.Vosk ? ModelManager.ListWhisperModels()[0] : null;
                 loadClock.Restart();
-                refiner = new WhisperRefiner(finalModel, liveModel);
-                report.AppendLine($"whisper={refiner.Description} on {WhisperRuntime.LoadedName} load={loadClock.Elapsed.TotalSeconds:F1}s");
+                refiner = WhisperRefiner.CreateWhisper(finalModel, liveModel);
+                report.AppendLine($"second={refiner.Description} on {WhisperRuntime.LoadedName} load={loadClock.Elapsed.TotalSeconds:F1}s");
+            }
+            if (refiner != null)
+            {
                 if (sentences.Count > 0)
                 {
                     refiner.Transcribe(sentences[0].Audio, out var warmup); // first call compiles GPU shaders etc.
@@ -91,7 +139,7 @@ internal static class SelfTest
                 foreach (var (text, audio) in sentences)
                 {
                     var draft = CaptionFormatter.FormatFinal(text, true);
-                    report.AppendLine($"VOSK    ({audio.Length / (double)AudioPipeline.SampleRate:F1}s audio): {draft}");
+                    report.AppendLine($"DRAFT   ({audio.Length / (double)AudioPipeline.SampleRate:F1}s audio): {draft}");
                     if (refiner == null) continue;
                     // Live passes as the app makes them: every 0.5 s of the sentence as it grows.
                     var times = new List<double>();
@@ -110,7 +158,7 @@ internal static class SelfTest
                     var raw = refiner.Transcribe(audio, out var took);
                     var refined = WhisperRefiner.Validate(raw, draft);
                     var shown = refined == null ? "(kept draft)" : refined.Length == 0 ? "(removed as noise)" : CaptionFormatter.FormatRefined(refined, true);
-                    report.AppendLine($"WHISPER ({took.TotalSeconds:F2}s, processor build {refiner.LastBuildTime.TotalMilliseconds:F0} ms): {shown}");
+                    report.AppendLine($"SECOND  ({took.TotalSeconds:F2}s): {shown}");
                     report.AppendLine($"  raw: {raw?.Trim()}");
                 }
             }

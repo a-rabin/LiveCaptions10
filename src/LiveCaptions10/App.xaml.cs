@@ -24,7 +24,7 @@ public partial class App : Application
     readonly AudioPipeline audio = new();
     AppSettings settings = new();
     CaptionWindow? window;
-    SpeechEngine? engine;
+    IRecognizer? engine;
     Forms.NotifyIcon? tray;
     Forms.ContextMenuStrip? gearMenu;
     Drawing.Icon? iconOn, iconOff;
@@ -238,10 +238,13 @@ public partial class App : Application
 
     // ---------- speech model ----------
 
+    /// <summary>Loads the streaming recognizer chosen in settings (sherpa-onnx if installed, else Vosk).</summary>
     async Task LoadModelAsync(string? preferred)
     {
         int version = ++loadVersion;
-        string? path = ModelManager.IsModel(preferred) ? preferred : ModelManager.FindModels().FirstOrDefault();
+        var kind = settings.Recognizer;
+        string? sherpaDir = SherpaModels.Streaming(kind);
+        string? path = sherpaDir ?? (ModelManager.IsModel(preferred) ? preferred : ModelManager.FindModels().FirstOrDefault());
         if (path == null)
         {
             modelState = ModelState.Missing;
@@ -253,7 +256,10 @@ public partial class App : Application
         UpdateStatus();
         try
         {
-            var loaded = await Task.Run(() => new SpeechEngine(path));
+            var punctuationDir = SherpaModels.Punctuation;
+            var loaded = await Task.Run<IRecognizer>(() => sherpaDir != null
+                ? new SherpaEngine(kind, sherpaDir, punctuationDir)
+                : new SpeechEngine(path));
             if (version != loadVersion || exiting)
             {
                 loaded.Dispose(); // a newer load superseded this one
@@ -262,10 +268,10 @@ public partial class App : Application
             loaded.Partial += update => Dispatcher.InvokeAsync(() => window?.ShowPartial(update));
             loaded.Final += update => Dispatcher.InvokeAsync(() => OnFinal(update));
             Interlocked.Exchange(ref engine, loaded)?.Dispose();
-            settings.ModelPath = path;
+            if (sherpaDir == null) settings.ModelPath = path;
             RequestSave();
             modelState = ModelState.Ready;
-            Log.Info("Loaded speech model " + path);
+            Log.Info($"Loaded {loaded.Name}: {path}");
         }
         catch (Exception ex)
         {
@@ -293,7 +299,8 @@ public partial class App : Application
             UpdateStatus();
             return;
         }
-        if (ModelManager.ListWhisperModels().Count == 0)
+        var parakeetDir = settings.SecondPassModel == SecondPass.Parakeet ? SherpaModels.Parakeet : null;
+        if (parakeetDir == null && ModelManager.ListWhisperModels().Count == 0)
         {
             whisperState = WhisperState.Missing;
             UpdateStatus();
@@ -305,16 +312,18 @@ public partial class App : Application
         try
         {
             var chosenModel = settings.WhisperModel;
-            bool live = settings.LiveWhisper;
+            // Live Whisper only helps the rough Vosk drafts; streaming transducers are already accurate live.
+            bool live = settings.LiveWhisper && SherpaModels.Streaming(settings.Recognizer) == null;
             var loaded = await Task.Run(() =>
             {
+                if (parakeetDir != null) return WhisperRefiner.CreateParakeet(parakeetDir);
                 WhisperRuntime.EnsureLoaded();
                 bool gpu = WhisperRuntime.OnGpu;
                 // GPU: most accurate model for finished sentences, smallest (fastest) for live updates.
                 // CPU: one small model, no live passes (they would starve the instant recognizer).
                 var finalModel = ModelManager.FindWhisperModel(chosenModel, preferLarge: gpu)!;
                 var liveModel = gpu && live ? ModelManager.ListWhisperModels()[0] : null;
-                return new WhisperRefiner(finalModel, liveModel);
+                return WhisperRefiner.CreateWhisper(finalModel, liveModel);
             });
             if (version != whisperLoadVersion || exiting || !settings.UseWhisper)
             {
@@ -326,7 +335,7 @@ public partial class App : Application
             loaded.LiveSource = (utterance, length, growth) => Volatile.Read(ref engine)?.SnapshotLive(utterance, length, growth);
             refiner = loaded;
             whisperState = WhisperState.Ready;
-            Log.Info($"Whisper on {WhisperRuntime.LoadedName}: {loaded.Description}");
+            Log.Info(parakeetDir != null ? $"Second pass on CPU: {loaded.Description}" : $"Whisper on {WhisperRuntime.LoadedName}: {loaded.Description}");
         }
         catch (Exception ex)
         {
@@ -415,6 +424,7 @@ public partial class App : Application
 
     string WhisperStatusText() => whisperState switch
     {
+        WhisperState.Ready when settings.SecondPassModel == SecondPass.Parakeet && SherpaModels.Parakeet != null => $"second pass: {refiner?.Description} (CPU)",
         WhisperState.Ready => $"Whisper on {WhisperRuntime.LoadedName}: {refiner?.Description}",
         WhisperState.Loading => "loading Whisper…",
         WhisperState.Downloading => $"downloading Whisper model {whisperProgress:0%}",
@@ -483,6 +493,7 @@ public partial class App : Application
                 }
                 var status = "Ready to caption";
                 if (audioInfo != null) status += "   ·   " + audioInfo;
+                if (engine != null) status += "   ·   " + engine.Name;
                 var whisper = WhisperStatusText();
                 if (whisper.Length > 0) status += "   ·   " + whisper;
                 window.SetStatus(status, null);
@@ -566,8 +577,13 @@ public partial class App : Application
             .Select(s => Item(s.Name, () => Change(() => settings.FontSize = s.Size), Math.Abs(settings.FontSize - s.Size) < 0.1)).ToArray()));
         items.Add(Sub("Lines shown", Enumerable.Range(1, 5)
             .Select(n => Item(n == 1 ? "1 line" : $"{n} lines", () => Change(() => settings.Lines = n), settings.Lines == n)).ToArray()));
+        items.Add(Sub("Text appears",
+            Item("Letter by letter, smooth (steady flow)", () => Change(() => settings.Reveal = TextReveal.Smooth), settings.Reveal == TextReveal.Smooth),
+            Item("Letter by letter, quick (less delay)", () => Change(() => settings.Reveal = TextReveal.Quick), settings.Reveal == TextReveal.Quick),
+            Item("All at once, in blocks (no added delay)", () => Change(() => settings.Reveal = TextReveal.Instant), settings.Reveal == TextReveal.Instant)));
         items.Add(new Forms.ToolStripSeparator());
 
+        items.Add(EngineMenu());
         items.Add(WhisperMenuItem());
         items.Add(WhisperOptionsMenu());
         items.Add(Item("Include microphone audio", ToggleMicrophone, settings.IncludeMicrophone));
@@ -617,6 +633,40 @@ public partial class App : Application
         var item = Item(text, ToggleWhisper, isChecked: settings.UseWhisper && whisperState is WhisperState.Ready or WhisperState.Loading);
         item.ToolTipText = "Whisper re-transcribes what was said: much better on videos and fast speech, adds punctuation.";
         return item;
+    }
+
+    Forms.ToolStripMenuItem EngineMenu()
+    {
+        Forms.ToolStripMenuItem Choice(string label, RecognizerKind kind, bool installed) =>
+            Item(installed ? label : label + " (not installed)", () => SetRecognizer(kind), settings.Recognizer == kind && installed, enabled: installed);
+        bool parakeet = SherpaModels.Parakeet != null;
+        bool Has(RecognizerKind kind) => SherpaModels.Streaming(kind) != null;
+        return Sub($"Speech engine (now: {engine?.Name ?? "loading"})",
+            Choice("Kroko (most accurate, ~1.3 s delay)", RecognizerKind.Kroko, Has(RecognizerKind.Kroko)),
+            Choice("Kroko L (larger model, ~1.3 s delay)", RecognizerKind.KrokoLFast, Has(RecognizerKind.KrokoLFast)),
+            Choice("Kroko L slow (~2.6 s delay)", RecognizerKind.KrokoL, Has(RecognizerKind.KrokoL)),
+            Choice("NeMo streaming (~1.1 s delay, less accurate)", RecognizerKind.NemoStreaming, Has(RecognizerKind.NemoStreaming)),
+            Choice("Vosk (original)", RecognizerKind.Vosk, ModelManager.FindModels().Count > 0),
+            new Forms.ToolStripSeparator(),
+            Item("Finish sentences with Whisper", () => SetSecondPass(SecondPass.Whisper), settings.SecondPassModel == SecondPass.Whisper),
+            Item(parakeet ? "Finish sentences with Parakeet (CPU)" : "Finish sentences with Parakeet (not installed)",
+                () => SetSecondPass(SecondPass.Parakeet), settings.SecondPassModel == SecondPass.Parakeet && parakeet, enabled: parakeet));
+    }
+
+    void SetRecognizer(RecognizerKind kind)
+    {
+        settings.Recognizer = kind;
+        RequestSave();
+        window?.ClearCaptions();
+        _ = LoadModelAsync(settings.ModelPath);
+        _ = LoadWhisperAsync(); // live Whisper only applies to Vosk
+    }
+
+    void SetSecondPass(SecondPass pass)
+    {
+        settings.SecondPassModel = pass;
+        RequestSave();
+        _ = LoadWhisperAsync();
     }
 
     Forms.ToolStripMenuItem WhisperOptionsMenu()
@@ -715,8 +765,10 @@ public partial class App : Application
 
     void SwitchModel(string path)
     {
+        settings.Recognizer = RecognizerKind.Vosk; // the Language list holds Vosk models
         window?.ClearCaptions();
         _ = LoadModelAsync(path);
+        _ = LoadWhisperAsync();
     }
 
     static void OpenModelsFolder() => OpenFolder(ModelManager.ModelsDir);

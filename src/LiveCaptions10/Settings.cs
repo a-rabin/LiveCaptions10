@@ -8,6 +8,19 @@ using System.Windows.Media;
 
 namespace LiveCaptions10;
 
+internal enum TextReveal
+{
+    Instant, // whole blocks as the recognizer delivers them
+    Quick,   // letter by letter, each block typed in about a third of the gap before the next
+    Smooth,  // letter by letter at a steady pace that spans the gap: continuous flow
+}
+
+internal enum SecondPass
+{
+    Whisper,
+    Parakeet,
+}
+
 internal enum CaptionPosition
 {
     Top,
@@ -23,11 +36,14 @@ internal sealed class AppSettings
     public bool SaveTranscript { get; set; }
     public bool UseWhisper { get; set; } = true;
     public ComputeDevice WhisperDevice { get; set; } = ComputeDevice.Auto;
-    public bool LiveWhisper { get; set; } = true; // live Whisper updates while speaking (GPU only)
+    public bool LiveWhisper { get; set; } = true; // live Whisper updates while speaking (GPU only, Vosk only)
+    public RecognizerKind Recognizer { get; set; } = RecognizerKind.Kroko; // falls back to Vosk if not installed
+    public SecondPass SecondPassModel { get; set; } = SecondPass.Whisper;
     public string? WhisperModel { get; set; } // file name in data\whisper; null = pick automatically
     public string Style { get; set; } = CaptionStyles.Default.Key;
     public double FontSize { get; set; } = 20;
     public int Lines { get; set; } = 2;
+    public TextReveal Reveal { get; set; } = TextReveal.Smooth; // how new text appears
     public string? ModelPath { get; set; }
     public double? FloatLeft { get; set; }
     public double? FloatTop { get; set; }
