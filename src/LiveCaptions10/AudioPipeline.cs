@@ -236,7 +236,7 @@ internal sealed class AudioPipeline : IDisposable
 
     void FeedLoop()
     {
-        const int chunk = SampleRate / 10;
+        const int chunk = SampleRate / 20; // 50 ms: small enough not to add noticeable delay
         var floats = new float[chunk];
         var pcm = new short[chunk];
         while (pumping)

@@ -58,7 +58,7 @@ internal static class WhisperRuntime
 }
 
 /// <summary>One Whisper model plus a processor sized to the clip being transcribed.</summary>
-internal sealed class WhisperRunner : IDisposable
+internal sealed class WhisperRunner : IClipTranscriber
 {
     const int SampleRate = AudioPipeline.SampleRate;
     const int SamplesPerEncoderFrame = SampleRate / 50; // Whisper's encoder sees 50 frames per second (1500 = 30 s)
@@ -90,7 +90,7 @@ internal sealed class WhisperRunner : IDisposable
     public string? Transcribe(short[] audio, out TimeSpan elapsed)
     {
         elapsed = TimeSpan.Zero;
-        var samples = Prepare(audio);
+        var samples = ClipAudio.Prepare(audio, SampleRate + SampleRate / 5); // Whisper wants >= 1 s
         if (samples == null) return null;
         var clock = Stopwatch.StartNew();
         var text = new StringBuilder();
@@ -140,34 +140,6 @@ internal sealed class WhisperRunner : IDisposable
         return processor;
     }
 
-    /// <summary>Trims leading/trailing silence and converts to float; null if there is too little speech.</summary>
-    static float[]? Prepare(short[] audio)
-    {
-        const int frame = SampleRate / 50; // 20 ms
-        const double speechRms = 150;      // ≈ -47 dBFS
-        int first = -1, last = -1;
-        for (int f = 0; f + frame <= audio.Length; f += frame)
-        {
-            double sum = 0;
-            for (int i = f; i < f + frame; i++) sum += (double)audio[i] * audio[i];
-            if (Math.Sqrt(sum / frame) > speechRms)
-            {
-                if (first < 0) first = f;
-                last = f + frame;
-            }
-        }
-        if (first < 0) return null;
-
-        int pad = SampleRate / 4;
-        int end = Math.Min(audio.Length, last + pad);
-        int start = Math.Max(0, Math.Max(first - pad, end - SampleRate * 29)); // Whisper's window is 30 s
-        if (last - first < SampleRate * 3 / 10) return null;                   // under 0.3 s of sound: not worth it
-
-        var samples = new float[Math.Max(end - start, SampleRate + SampleRate / 5)]; // Whisper wants >= 1 s
-        for (int i = start; i < end; i++) samples[i - start] = audio[i] / 32768f;
-        return samples;
-    }
-
     public void Dispose()
     {
         processor?.Dispose();
@@ -203,24 +175,36 @@ internal sealed class WhisperRefiner : IDisposable
         "bye.", "bye!", "so", "okay.", ".", "...",
     };
 
-    readonly WhisperRunner final;
-    readonly WhisperRunner? live;
+    readonly IClipTranscriber final;
+    readonly IClipTranscriber? live;
     readonly BlockingCollection<Job> jobs = new();
-    readonly CancellationTokenSource stop = new();
+    readonly CancellationTokenSource stop;
     readonly Thread worker;
     long lastLiveUtterance;
     int lastLiveLength;
 
-    /// <param name="finalModel">Model for finished sentences (the most accurate one that is fast enough).</param>
-    /// <param name="liveModel">Model for live passes while speaking, or null for none. May equal <paramref name="finalModel"/>.</param>
-    public WhisperRefiner(string finalModel, string? liveModel)
+    WhisperRefiner(IClipTranscriber final, IClipTranscriber? live, CancellationTokenSource stop)
     {
-        final = new WhisperRunner(finalModel, stop.Token);
-        if (liveModel != null)
-            live = string.Equals(liveModel, finalModel, StringComparison.OrdinalIgnoreCase) ? final : new WhisperRunner(liveModel, stop.Token);
-        worker = new Thread(Run) { IsBackground = true, Name = "Whisper refiner", Priority = ThreadPriority.BelowNormal };
+        this.final = final;
+        this.live = live;
+        this.stop = stop;
+        worker = new Thread(Run) { IsBackground = true, Name = "Second-pass refiner", Priority = ThreadPriority.BelowNormal };
         worker.Start();
     }
+
+    /// <param name="finalModel">Whisper model for finished sentences (the most accurate one that is fast enough).</param>
+    /// <param name="liveModel">Whisper model for live passes while speaking, or null for none. May equal <paramref name="finalModel"/>.</param>
+    public static WhisperRefiner CreateWhisper(string finalModel, string? liveModel)
+    {
+        var stop = new CancellationTokenSource();
+        var final = new WhisperRunner(finalModel, stop.Token);
+        IClipTranscriber? live = liveModel == null ? null
+            : string.Equals(liveModel, finalModel, StringComparison.OrdinalIgnoreCase) ? final : new WhisperRunner(liveModel, stop.Token);
+        return new WhisperRefiner(final, live, stop);
+    }
+
+    /// <summary>Parakeet TDT for finished sentences (CPU, no live layer).</summary>
+    public static WhisperRefiner CreateParakeet(string modelDir) => new(new ParakeetRunner(modelDir), null, new CancellationTokenSource());
 
     public string FinalModel => final.ModelPath;
 
@@ -249,9 +233,9 @@ internal sealed class WhisperRefiner : IDisposable
     /// <summary>Synchronous transcription with the final model (used by --selftest).</summary>
     public string? Transcribe(short[] audio, out TimeSpan elapsed) => final.Transcribe(audio, out elapsed);
 
-    public TimeSpan LastBuildTime => final.LastBuildTime;
+    public TimeSpan LastBuildTime => (final as WhisperRunner)?.LastBuildTime ?? TimeSpan.Zero;
 
-    public int LastLiveContext => live?.LastContext ?? 0;
+    public int LastLiveContext => (live as WhisperRunner)?.LastContext ?? 0;
 
     /// <summary>Synchronous transcription with the live model (used by --selftest).</summary>
     public string? TranscribeLive(short[] audio, out TimeSpan elapsed)
@@ -320,7 +304,7 @@ internal sealed class WhisperRefiner : IDisposable
             {
                 var raw = final.Transcribe(job.Audio, out var took);
                 result = Validate(raw, job.Draft);
-                Log.Info($"Whisper {final.Name} {took.TotalMilliseconds:F0} ms: \"{raw?.Trim()}\" (draft \"{job.Draft}\")" + (result == null ? " → kept draft" : ""));
+                Log.Info($"Second pass {final.Name} {took.TotalMilliseconds:F0} ms: \"{raw?.Trim()}\" (draft \"{job.Draft}\")" + (result == null ? " → kept draft" : ""));
             }
             catch (OperationCanceledException)
             {
@@ -372,17 +356,25 @@ internal sealed class WhisperRefiner : IDisposable
         }
     }
 
-    static string Clean(string raw) => TrimRepeatedOpening(Spaces.Replace(Annotations.Replace(raw, " "), " ").Trim());
+    static string Clean(string raw) => DropRepeatedSentences(Spaces.Replace(Annotations.Replace(raw, " "), " ").Trim());
 
-    /// <summary>Whisper sometimes ends a clip by repeating its first sentence; cut the repeat.</summary>
-    static string TrimRepeatedOpening(string text)
+    static readonly Regex SentenceBreak = new(@"(?<=[.?!])\s+", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Whisper sometimes pads a clip by repeating a sentence it already wrote (often the first or last).
+    /// A sentence of 4+ words appearing twice in one short clip is almost never real speech: keep the first.
+    /// </summary>
+    static string DropRepeatedSentences(string text)
     {
-        int end = text.IndexOfAny(new[] { '.', '?', '!' });
-        if (end < 0) return text;
-        var opening = text[..(end + 1)];
-        if (Words.Matches(opening).Count < 5) return text;
-        int again = text.IndexOf(opening, end + 1, StringComparison.OrdinalIgnoreCase);
-        return again > 0 ? text[..again].TrimEnd() : text;
+        var seen = new HashSet<string>();
+        var kept = new List<string>();
+        foreach (var sentence in SentenceBreak.Split(text))
+        {
+            var key = string.Join(' ', Words.Matches(sentence.ToLowerInvariant()).Select(m => m.Value));
+            if (key.Split(' ').Length >= 4 && !seen.Add(key)) continue;
+            kept.Add(sentence);
+        }
+        return string.Join(' ', kept);
     }
 
     static bool HasRepetitionLoop(string text)
