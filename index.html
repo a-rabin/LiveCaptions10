@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Captions for Windows 10</title>
+<meta name="description" content="Free, offline live captions for anything your PC plays: videos, calls, streams, games. The Windows 11 feature, for Windows 10.">
+<link rel="canonical" href="https://a-rabin.github.io/LiveCaptions10/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Live Captions for Windows 10">
+<meta property="og:description" content="Free, offline live captions for anything your PC plays. No GPU, no account, nothing uploaded.">
+<meta property="og:url" content="https://a-rabin.github.io/LiveCaptions10/">
+<meta property="og:image" content="https://a-rabin.github.io/LiveCaptions10/screenshot.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0067c0">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='2' y='9' width='60' height='46' rx='10' fill='%230067c0'/%3E%3Ctext x='32' y='42' font-family='Segoe UI,Arial,sans-serif' font-size='28' font-weight='700' fill='white' text-anchor='middle'%3ECC%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --surface-2: #eef1f5;
+    --text: #14171c;
+    --muted: #5a6170;
+    --border: #e1e5eb;
+    --accent: #0067c0;
+    --accent-text: #ffffff;
+    --accent-soft: #e6f0fa;
+    --good: #0f7b3f;
+    --shadow: 0 1px 2px rgb(16 24 40 / .06), 0 8px 24px rgb(16 24 40 / .06);
+    --radius: 14px;
+    --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Roboto, Arial, sans-serif;
+    --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1014;
+      --surface: #161a20;
+      --surface-2: #1d222a;
+      --text: #e8ebf0;
+      --muted: #9aa3b1;
+      --border: #272d36;
+      --accent: #4ba3f5;
+      --accent-text: #06121f;
+      --accent-soft: #14283d;
+      --good: #4cc38a;
+      --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px rgb(0 0 0 / .3);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.6 var(--font); -webkit-font-smoothing: antialiased; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  img { max-width: 100%; height: auto; display: block; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  kbd { font: 600 .82em var(--font); padding: .12em .5em; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; background: var(--surface); white-space: nowrap; }
+  code { font: .9em var(--mono); background: var(--surface-2); padding: .1em .35em; border-radius: 5px; }
+
+  /* header */
+  header.top { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: saturate(1.4) blur(10px); border-bottom: 1px solid var(--border); }
+  header.top .wrap { display: flex; align-items: center; gap: 16px; height: 60px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; color: var(--text); text-decoration: none; white-space: nowrap; }
+  .badge { display: inline-grid; place-items: center; width: 34px; height: 26px; border-radius: 7px; background: #0067c0; color: #fff; font-weight: 800; font-size: 13px; letter-spacing: .02em; }
+  nav.links { margin-left: auto; display: flex; gap: 22px; }
+  nav.links a { color: var(--muted); text-decoration: none; font-size: 15px; }
+  nav.links a:hover { color: var(--text); }
+  @media (max-width: 720px) { nav.links a:not(.keep) { display: none; } }
+
+  /* hero */
+  .hero { padding: 72px 0 40px; text-align: center; }
+  .eyebrow { display: inline-block; font-size: 14px; color: var(--accent); background: var(--accent-soft); padding: 4px 12px; border-radius: 999px; margin-bottom: 20px; }
+  h1 { font-size: clamp(36px, 6vw, 60px); line-height: 1.08; letter-spacing: -.02em; margin: 0 0 18px; font-weight: 700; }
+  .lead { font-size: clamp(18px, 2.2vw, 21px); color: var(--muted); max-width: 680px; margin: 0 auto 30px; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; min-height: 52px; padding: 8px 22px; border-radius: 10px; font-weight: 600; text-decoration: none; border: 1px solid transparent; transition: transform .12s ease, box-shadow .12s ease; }
+  .btn small { font-weight: 400; font-size: 12.5px; opacity: .85; }
+  .btn.primary { background: var(--accent); color: var(--accent-text); box-shadow: var(--shadow); }
+  .btn.secondary { background: var(--surface); color: var(--text); border-color: var(--border); }
+  .btn:hover { transform: translateY(-1px); }
+  .btn:focus-visible, a:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 3px; }
+  .fine { margin-top: 16px; font-size: 14px; color: var(--muted); }
+
+  /* demo: a mock desktop with the caption bar docked at the top */
+  .demo { margin: 44px auto 0; max-width: 920px; }
+  .screen { position: relative; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); box-shadow: var(--shadow);
+            background: radial-gradient(120% 90% at 20% 10%, #2b5a8a 0%, #17314f 45%, #0d1b2c 100%); text-align: left; }
+  .capbar { position: absolute; inset: 0 0 auto 0; display: flex; align-items: flex-start; gap: 12px; padding: 1.4% 1.2% 1.4% 2%; background: #1c1c1c; border-bottom: 1px solid rgb(128 128 128 / .25); }
+  .captext { flex: 1; height: calc(2 * 1.32em); overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; color: #fff; font: clamp(11px, 2.25vw, 21px)/1.32 var(--font); }
+  .capicons { display: flex; gap: 8px; color: #fff; opacity: .55; font-size: clamp(9px, 1.5vw, 14px); padding-top: .2em; user-select: none; }
+  .window { position: absolute; left: 9%; right: 9%; top: 21%; bottom: 14%; border-radius: 8px; background: #101114; box-shadow: 0 16px 40px rgb(0 0 0 / .45); overflow: hidden; display: grid; grid-template-rows: auto 1fr auto; }
+  .titlebar { height: 7%; min-height: 12px; background: #202227; display: flex; align-items: center; gap: 5px; padding: 0 8px; }
+  .titlebar i { width: 7px; height: 7px; border-radius: 50%; background: #3a3d44; }
+  .video { display: grid; place-items: center; background: linear-gradient(135deg, #263445, #151c25); }
+  .play { width: 14%; aspect-ratio: 1; border-radius: 50%; background: rgb(255 255 255 / .14); display: grid; place-items: center; }
+  .play::after { content: ""; margin-left: 12%; border-style: solid; border-width: .9vw 0 .9vw 1.5vw; border-color: transparent transparent transparent rgb(255 255 255 / .85); }
+  @media (min-width: 1000px) { .play::after { border-width: 9px 0 9px 15px; } }
+  .progress { height: 5px; background: #2b2e35; }
+  .progress span { display: block; height: 100%; width: 38%; background: #e33; animation: progress 40s linear infinite; }
+  @keyframes progress { from { width: 8%; } to { width: 92%; } }
+  .taskbar { position: absolute; inset: auto 0 0 0; height: 7%; background: rgb(20 22 26 / .92); display: flex; align-items: center; gap: 1.2%; padding: 0 1.5%; }
+  .taskbar i { width: 2.4%; aspect-ratio: 1; border-radius: 3px; background: rgb(255 255 255 / .18); }
+  .taskbar i:first-child { background: #0067c0; }
+  .caption-note { text-align: center; color: var(--muted); font-size: 14px; margin-top: 12px; }
+
+  /* sections */
+  section { padding: 64px 0; }
+  section + section { border-top: 1px solid var(--border); }
+  h2 { font-size: clamp(26px, 3.4vw, 34px); letter-spacing: -.01em; line-height: 1.2; margin: 0 0 10px; }
+  .sub { color: var(--muted); margin: 0 0 32px; max-width: 720px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 20px 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 17px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15.5px; line-height: 1.55; }
+  .icon { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); margin-bottom: 12px; }
+  .icon svg { width: 20px; height: 20px; }
+
+  .shot { border-radius: 10px; border: 1px solid var(--border); box-shadow: var(--shadow); overflow: hidden; background: #1c1c1c; }
+
+  ol.steps { list-style: none; counter-reset: s; padding: 0; margin: 0; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+  ol.steps li { counter-increment: s; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+  ol.steps li::before { content: counter(s); display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: var(--accent-text); font-weight: 700; font-size: 14px; margin-bottom: 10px; }
+  ol.steps h3 { margin: 0 0 4px; font-size: 17px; }
+  ol.steps p { margin: 0; color: var(--muted); font-size: 15.5px; }
+
+  .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+  table { width: 100%; border-collapse: collapse; font-size: 15.5px; min-width: 560px; }
+  th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { font-variant-numeric: tabular-nums; }
+  tr.best td { background: color-mix(in srgb, var(--good) 9%, transparent); }
+  tr.best td:first-child { font-weight: 650; }
+  .note { font-size: 14px; color: var(--muted); margin-top: 12px; }
+
+  .two { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 720px) { .two { grid-template-columns: 1fr; } }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px 24px; }
+  .panel.wide { grid-column: 1 / -1; }
+  .panel h3 { margin: 0 0 10px; font-size: 18px; }
+  .panel ul { margin: 0; padding-left: 20px; color: var(--muted); }
+  .panel li { margin: 6px 0; }
+  .keys { display: grid; grid-template-columns: auto 1fr; gap: 10px 16px; align-items: baseline; margin: 0; }
+  .keys dt { white-space: nowrap; }
+  .keys dd { margin: 0; color: var(--muted); }
+
+  .download { text-align: center; }
+  .download .cta { margin-top: 8px; }
+
+  footer { padding: 36px 0 48px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--border); }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
+  footer p { margin: 0; max-width: 640px; }
+  footer a { color: var(--muted); }
+
+  @media (max-width: 560px) {
+    body { font-size: 16px; }
+    .wrap { padding: 0 16px; }
+    .hero { padding-top: 48px; }
+    section { padding: 48px 0; }
+    .btn { width: 100%; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top"><span class="badge" aria-hidden="true">CC</span>Live Captions for Windows 10</a>
+    <nav class="links" aria-label="Sections">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#accuracy">Accuracy</a>
+      <a class="keep" href="https://github.com/a-rabin/LiveCaptions10">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <div class="hero wrap">
+    <span class="eyebrow">Free and open source · Windows 10 and 11</span>
+    <h1>Live captions for Windows&nbsp;10</h1>
+    <p class="lead">Captions for anything your PC plays: videos, calls, streams, games. It runs entirely on your computer, needs no GPU, and stays out of the way in a bar at the top of the screen.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/a-rabin/LiveCaptions10/releases/download/v1.0.0/LiveCaptions10-v1.0.0-win-x64.zip">Download for Windows<small>v1.0.0 · 151 MB zip</small></a>
+      <a class="btn secondary" href="https://github.com/a-rabin/LiveCaptions10">View on GitHub<small>MIT licence</small></a>
+    </div>
+    <p class="fine">Unzip and run: no installer, no account, no .NET to install.</p>
+
+    <div class="demo">
+      <div class="screen" role="img" aria-label="Illustration: a Windows desktop playing a video, with the caption bar docked across the top showing the spoken words.">
+        <div class="capbar"><div class="captext"><span id="captext">Okay, so here's the thing: nobody tells you that the hardest part of building a gaming PC is cable management.</span></div><div class="capicons" aria-hidden="true">⚙ ✕</div></div>
+        <div class="window" aria-hidden="true">
+          <div class="titlebar"><i></i><i></i><i></i></div>
+          <div class="video"><div class="play"></div></div>
+          <div class="progress"><span></span></div>
+        </div>
+        <div class="taskbar" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+      </div>
+      <p class="caption-note">An illustration of the caption bar. New words type out letter by letter as they're recognized.</p>
+    </div>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>What it does</h2>
+      <p class="sub">The same idea as the Live Captions feature in Windows 11, built for the PCs that can't get it.</p>
+      <div class="grid">
+        <div class="card"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg></div>
+          <h3>Any audio, any app</h3><p>Listens to whatever your speakers play, and can mix in your microphone. Switch to headphones and it follows.</p></div>
+        <div class="card"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
+          <h3>Offline and private</h3><p>Speech recognition runs on your PC. Nothing is uploaded, and there's no account and no telemetry.</p></div>
+        <div class="card"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h3l2-6 4 12 2-6h5"/></svg></div>
+          <h3>Words as they're spoken</h3><p>A streaming model writes punctuated, capitalized text about 1.3 s behind the speaker, using a few percent of one CPU core.</p></div>
+        <div class="card"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg></div>
+          <h3>Docked like the taskbar</h3><p>Sits at the top or bottom and reserves its strip of the screen, so maximized windows don't cover it. Or float it anywhere.</p></div>
+        <div class="card"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7V5h16v2"/><path d="M12 5v14"/><path d="M9 19h6"/></svg></div>
+          <h3>Smooth text</h3><p>New words type out letter by letter instead of jumping in blocks. Choose Smooth, Quick or All at once.</p></div>
+        <div class="card"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></svg></div>
+          <h3><kbd>Win</kbd> + <kbd>Ctrl</kbd> + <kbd>L</kbd></h3><p>The same shortcut as Windows 11. Also caption styles, text sizes, 1–5 lines, a profanity filter, transcripts, and start with Windows.</p></div>
+        <div class="card"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></div>
+          <h3>Portable</h3><p>Settings, transcripts and models all live in one folder next to the app. To uninstall, delete the folder.</p></div>
+        <div class="card"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></div>
+          <h3>Optional extras</h3><p>Vosk models for 35 other languages, and an extra Whisper pass that can run on any GPU through Vulkan.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="screenshot">
+    <div class="wrap">
+      <h2>The real thing</h2>
+      <p class="sub">A screenshot of the caption bar docked across the top of a 1920 × 1080 screen.</p>
+      <div class="shot"><img src="screenshot.png" width="1920" height="73" alt="Screenshot of the caption bar: white text on a dark strip reading 'Good evening, and welcome to the news. Tonight, scientists in Canada announced a new way to recycle plastic bottles. Do you think this will help the environment? Experts say it could reduce waste by half by next September.'"></div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <h2>How it works</h2>
+      <p class="sub">It uses the same kind of speech model as Windows 11's Live Captions: a streaming model that hears each moment of audio once, instead of re-reading whole clips.</p>
+      <ol class="steps">
+        <li><h3>Capture</h3><p>Whatever your PC plays is captured, converted to 16 kHz and buffered, so no audio is dropped even when the PC is busy.</p></li>
+        <li><h3>Recognize</h3><p>Kroko, a compact streaming model run by sherpa-onnx, turns each 1.28 s of sound into words, punctuation included.</p></li>
+        <li><h3>Show</h3><p>Words type into a caption bar that Windows treats like a second taskbar. Quiet moments cost almost no CPU.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="accuracy">
+    <div class="wrap">
+      <h2>Accuracy and speed</h2>
+      <p class="sub">Measured on a Ryzen 5 5600G. "Word errors" is the share of words wrong or missing, so lower is better.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Speech engine</th><th>Clear speech</th><th>Fast speech</th><th>Fast speech + music</th><th>CPU per second of audio</th></tr></thead>
+          <tbody>
+            <tr><td>Vosk (older model)</td><td class="num">6.5–9.7%</td><td class="num">6.9–16.7%</td><td class="num">37.5%</td><td class="num">0.68–1.57 s</td></tr>
+            <tr><td>NeMo streaming</td><td class="num">3.2%</td><td class="num">16.7–18.1%</td><td class="num">23.6%</td><td class="num">0.10 s</td></tr>
+            <tr class="best"><td>Kroko (included)</td><td class="num">0.0%</td><td class="num">1.4–4.2%</td><td class="num">4.2%</td><td class="num">0.06 s</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">These test clips were made with the Windows text-to-speech voices, which are easier to understand than most real recordings. Expect more mistakes on real-world audio, especially with names and jargon.</p>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="wrap">
+      <h2>Getting started</h2>
+      <p class="sub">There's no installer: unzip the download, run <code>LiveCaptions10.exe</code>, and play something.</p>
+      <div class="two">
+        <div class="panel wide">
+          <h3>Controls</h3>
+          <dl class="keys">
+            <dt><kbd>Win</kbd> + <kbd>Ctrl</kbd> + <kbd>L</kbd></dt><dd>Turn captions on or off</dd>
+            <dt>Tray icon</dt><dd>Left-click to turn on or off; right-click for settings</dd>
+            <dt>⚙ on the bar</dt><dd>Position, style, text size, lines, how text appears, engine</dd>
+            <dt>Mouse wheel</dt><dd>Scroll back through earlier captions</dd>
+          </dl>
+        </div>
+        <div class="panel">
+          <h3>Requirements</h3>
+          <ul>
+            <li>Windows 10 or 11, 64-bit</li>
+            <li>About 300 MB of memory while running</li>
+            <li>No GPU, internet connection or .NET install needed</li>
+            <li>English is included; other languages via Vosk</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>Good to know</h3>
+          <ul>
+            <li>Captions trail the speaker by about 1.3 seconds.</li>
+            <li>Uncommon names and terms can come out wrong, and numbers are written as words.</li>
+            <li>Apps that use exclusive-mode audio can't be captured.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="download">
+    <div class="wrap">
+      <h2>Try it</h2>
+      <p class="sub" style="margin-left:auto;margin-right:auto">Free, open source, and about a minute from download to captions.</p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/a-rabin/LiveCaptions10/releases/download/v1.0.0/LiveCaptions10-v1.0.0-win-x64.zip">Download v1.0.0<small>Windows 10 and 11 · 64-bit · 151 MB</small></a>
+        <a class="btn secondary" href="https://github.com/a-rabin/LiveCaptions10/releases">All releases<small>Release notes and checksums</small></a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Live Captions for Windows 10 is MIT licensed. The bundled Kroko speech model is by <a href="https://kroko.ai/">Banafo</a>, CC BY-SA 4.0, via <a href="https://github.com/k2-fsa/sherpa-onnx">sherpa-onnx</a>. This is an independent project, not affiliated with or endorsed by Microsoft.</p>
+    <p><a href="https://github.com/a-rabin/LiveCaptions10">Source code</a> · <a href="https://github.com/a-rabin/LiveCaptions10/issues">Report a problem</a></p>
+  </div>
+</footer>
+
+<script>
+  // Mock caption bar: words arrive in blocks every 1.28 s (like the Kroko model) and are typed out
+  // letter by letter at a steady pace, the same way the app's "Smooth" setting works.
+  (function () {
+    var el = document.getElementById("captext");
+    if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    var sentences = [
+      "Okay, so here's the thing: nobody tells you that the hardest part of building a gaming PC is cable management.",
+      "Good evening, and welcome to the news. Tonight, scientists announced a new way to recycle plastic bottles.",
+      "Do you think this will help the environment? Experts say it could cut waste by half by next September.",
+      "Anyway, let's get into the benchmarks, because the numbers are honestly kind of wild."
+    ];
+    var words = [], target = "", shown = 0, rate = 18, last = 0, s = 0;
+    function nextSentence() { words = sentences[s++ % sentences.length].split(" "); }
+    function deliver() {
+      if (!words.length) { setTimeout(function () { nextSentence(); deliver(); }, 1200); return; }
+      var block = words.splice(0, 3 + Math.floor(Math.random() * 3)).join(" ");
+      target += (target ? " " : "") + block;
+      if (target.length > 600) { var cut = target.indexOf(". ", target.length - 400) + 2; if (cut > 1) { target = target.slice(cut); shown = Math.max(0, shown - cut); } }
+      rate = Math.max(14, (target.length - shown) / 1.15);
+      setTimeout(deliver, 1280);
+    }
+    function frame(t) {
+      var dt = last ? Math.min(0.1, (t - last) / 1000) : 0; last = t;
+      if (shown < target.length) { shown = Math.min(target.length, shown + rate * dt); el.textContent = target.slice(0, Math.floor(shown)); }
+      requestAnimationFrame(frame);
+    }
+    el.textContent = ""; nextSentence(); deliver(); requestAnimationFrame(frame);
+  })();
+</script>
+</body>
+</html>
