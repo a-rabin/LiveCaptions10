@@ -2,6 +2,8 @@
 
 Windows 11 has a built-in Live Captions feature (Win + Ctrl + L) that captions whatever your PC is playing. Windows 10 doesn't. This app adds it.
 
+**[Website](https://a-rabin.github.io/LiveCaptions10/)** · **[Download the latest release](https://github.com/a-rabin/LiveCaptions10/releases/latest)**
+
 ![The caption bar docked at the top of the screen](docs/screenshot.png)
 
 It listens to your speakers (and optionally your microphone), runs speech recognition entirely on your PC, and shows the text in a bar docked to the top or bottom of the screen, or in a floating window. It works with YouTube, Zoom/Teams/Discord calls, podcasts, games, and anything else that makes sound.
