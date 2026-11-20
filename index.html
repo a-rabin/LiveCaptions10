@@ -115,7 +115,8 @@
   .icon { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); margin-bottom: 12px; }
   .icon svg { width: 20px; height: 20px; }
 
-  .shot { border-radius: 10px; border: 1px solid var(--border); box-shadow: var(--shadow); overflow: hidden; background: #1c1c1c; }
+  .shot { border-radius: 10px; border: 1px solid var(--border); box-shadow: var(--shadow); overflow-x: auto; background: #1c1c1c; }
+  .shot img { min-width: 960px; } /* a wide, short strip: keep the text legible and let it scroll on small screens */
 
   ol.steps { list-style: none; counter-reset: s; padding: 0; margin: 0; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
   ol.steps li { counter-increment: s; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
